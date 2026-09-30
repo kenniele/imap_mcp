@@ -22,7 +22,9 @@ type Security interface {
 func Handler(service *app.Service, ready Readiness, token string, metrics *observability.Metrics, logger *slog.Logger, security Security) http.Handler {
 	server := sdk.NewServer(&sdk.Implementation{Name: "multi-account-mail", Version: "0.2.0"}, nil)
 	tools.Register(server, service, metrics, logger)
-	transport := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{JSONResponse: true, SessionTimeout: 10 * time.Minute})
+	// Discovery and tool calls may arrive without a retained MCP session header.
+	// Authentication is checked independently on every request below.
+	transport := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	mux := http.NewServeMux()
 	protect := func(next http.Handler) http.Handler { return auth.Bearer(token, next) }
 	if security != nil {

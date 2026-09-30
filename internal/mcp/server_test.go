@@ -36,6 +36,84 @@ func (t authorizedTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	r.Header.Set("Authorization", "Bearer "+t.token)
 	return t.base.RoundTrip(r)
 }
+
+func TestDiscoveryWithoutSession(t *testing.T) {
+	accounts := testStore{}
+	metrics := observability.NewMetrics()
+	service := app.New(accounts, nil, nil)
+	token := strings.Repeat("t", 32)
+	handler := Handler(service, accounts, token, metrics, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	for _, version := range []string{"2025-03-26", "2025-06-18", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) {
+			request := func(body string, authenticated bool) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Accept", "application/json, text/event-stream")
+				req.Header.Set("MCP-Protocol-Version", version)
+				if authenticated {
+					req.Header.Set("Authorization", "Bearer "+token)
+				}
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, req)
+				return response
+			}
+			initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"` + version + `","capabilities":{},"clientInfo":{"name":"discovery-test","version":"1"}}}`
+			response := request(initialize, true)
+			if response.Code != http.StatusOK {
+				t.Fatalf("initialization status=%d", response.Code)
+			}
+			// Discovery and subsequent calls must not depend on a process-local session.
+			for range 2 {
+				response = request(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, true)
+				var reply struct {
+					Error  json.RawMessage `json:"error"`
+					Result struct {
+						Tools []*sdk.Tool `json:"tools"`
+					} `json:"result"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &reply); err != nil {
+					t.Fatal(err)
+				}
+				if response.Code != http.StatusOK || len(reply.Error) != 0 || len(reply.Result.Tools) != 6 {
+					t.Fatalf("sessionless discovery: status=%d error=%s tool_count=%d", response.Code, reply.Error, len(reply.Result.Tools))
+				}
+				for _, tool := range reply.Result.Tools {
+					if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+						t.Fatalf("tool is not read-only: %s", tool.Name)
+					}
+					encoded, err := json.Marshal(tool.InputSchema)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var schema struct {
+						Properties map[string]json.RawMessage `json:"properties"`
+					}
+					if err := json.Unmarshal(encoded, &schema); err != nil {
+						t.Fatal(err)
+					}
+					if schema.Properties == nil {
+						t.Fatalf("tool schema omits properties: %s", tool.Name)
+					}
+				}
+			}
+			response = request(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mail_accounts","arguments":{}}}`, true)
+			var called struct {
+				Error  json.RawMessage     `json:"error"`
+				Result *sdk.CallToolResult `json:"result"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &called); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || len(called.Error) != 0 || called.Result == nil || called.Result.IsError {
+				t.Fatal("sessionless mail_accounts call failed")
+			}
+			if response = request(`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`, false); response.Code != http.StatusUnauthorized {
+				t.Fatal("unauthenticated discovery was accepted")
+			}
+		})
+	}
+}
+
 func TestStreamableHTTPTools(t *testing.T) {
 	fixture := testutil.NewIMAP(t)
 	accounts := testStore{}

@@ -53,6 +53,10 @@ func add[In, Out any](server *sdk.Server, metrics *observability.Metrics, logger
 	if err != nil {
 		panic(err)
 	}
+	// OpenAI clients expect properties even for tools with no arguments.
+	if schema.Properties == nil {
+		schema.Properties = map[string]*jsonschema.Schema{}
+	}
 	if property := schema.Properties["limit"]; property != nil {
 		low, high := float64(1), float64(100)
 		property.Minimum = &low
