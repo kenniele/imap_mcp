@@ -1,7 +1,9 @@
-{$MCP_DOMAIN} {
+# Append this site block to the existing proxy's Caddyfile.
+# Keep existing site blocks. The proxy and MCP must share MCP_PROXY_NETWORK.
+imap-mcp.chickenkiller.com {
     @public path /mcp /oauth/mcp/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/mcp /.well-known/oauth-authorization-server
     handle @public {
-        reverse_proxy mail-mcp:8080
+        reverse_proxy imap-mcp-backend:8080
     }
     handle {
         respond "Not found" 404

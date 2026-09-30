@@ -6,3 +6,6 @@ bin
 .cache
 coverage.out
 *.log
+__pycache__
+deploy/releases
+deploy/current

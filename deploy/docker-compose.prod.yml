@@ -1,0 +1,56 @@
+# Standalone production stack. Uses the existing imap_mcp project/data volume.
+# The shared Caddy belongs to FitLog and is managed independently.
+services:
+  mail-mcp:
+    image: ${MCP_IMAGE:?set MCP_IMAGE to an immutable GHCR image tag}
+    restart: unless-stopped
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_URL: postgres://mailmcp:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@imap-mcp-db:5432/mailmcp?sslmode=disable
+      MCP_SECRET_KEY: ${MCP_SECRET_KEY:?keep the existing encryption key}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:?set MCP_AUTH_TOKEN}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AUTH_MODE: ${AUTH_MODE:-oauth}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:?set MCP_PUBLIC_URL}
+      MCP_OAUTH_CLIENT_ID: ${MCP_OAUTH_CLIENT_ID:-mail-mcp-chatgpt}
+      MCP_OAUTH_CLIENT_SECRET: ${MCP_OAUTH_CLIENT_SECRET:-}
+      MCP_OAUTH_LOGIN_TOKEN: ${MCP_OAUTH_LOGIN_TOKEN:-}
+      MCP_OAUTH_REDIRECT_URIS: ${MCP_OAUTH_REDIRECT_URIS:-https://chatgpt.com/connector_platform_oauth_redirect}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_ALLOWED_SUBJECT: ${OIDC_ALLOWED_SUBJECT:-}
+    ports:
+      - "127.0.0.1:${MCP_HOST_PORT:-18080}:8080"
+    networks:
+      default: {}
+      shared_proxy:
+        aliases: [imap-mcp-backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 15s
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mailmcp
+      POSTGRES_USER: mailmcp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      default:
+        aliases: [imap-mcp-db]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U mailmcp -d mailmcp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+networks:
+  shared_proxy:
+    external: true
+    name: ${MCP_PROXY_NETWORK:-deployments_default}
+volumes:
+  postgres_data:

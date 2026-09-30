@@ -21,7 +21,8 @@ Mail.ru — preset IMAP, MCP и application слой не зависят от п
 
 ## Быстрый запуск с Docker Compose
 
-Требуется работающий Docker Engine с Compose v2. HTTP backend публикуется только на `127.0.0.1:8080`, PostgreSQL не публикует порт.
+Требуется работающий Docker Engine с Compose v2. HTTP backend публикуется только на `127.0.0.1:18080`, PostgreSQL не публикует порт.
+Если порт занят другим сервисом, задайте свободный `MCP_HOST_PORT` в `.env`. Внутри контейнера MCP продолжает слушать `8080`.
 
 ```sh
 cp .env.example .env
@@ -43,19 +44,19 @@ openssl rand -hex 32
 
 ```sh
 docker compose up -d --build
-docker compose exec mail-mcp account add
+docker compose exec mail-mcp /mail-mcp account add
 ```
 
 Интерактивный CLI: alias `personal`, email, provider `mailru`, пароль **внешнего приложения**, без echo.
 Повторите для `university` и `work`. Main account password использовать нельзя.
 
 ```sh
-docker compose exec mail-mcp account list
-docker compose exec mail-mcp account test university
-docker compose exec mail-mcp account disable university
-docker compose exec mail-mcp account delete university
-curl http://localhost:8080/health
-curl http://localhost:8080/ready
+docker compose exec mail-mcp /mail-mcp account list
+docker compose exec mail-mcp /mail-mcp account test university
+docker compose exec mail-mcp /mail-mcp account disable university
+docker compose exec mail-mcp /mail-mcp account delete university
+curl http://127.0.0.1:18080/health
+curl http://127.0.0.1:18080/ready
 ```
 
 `disable` выключает аккаунт для MCP. `delete` удаляет credentials из базы; сами письма остаются на IMAP-сервере.
@@ -89,8 +90,9 @@ make build
 ```
 
 `migrate` явно применяет начальную idempotent схему; автоматической модификации production схемы при старте нет.
+Команда применяет также `002_oauth.sql` для встроенной авторизации; повторное применение безопасно.
 Инициализация `/docker-entrypoint-initdb.d` выполняется PostgreSQL только при первом создании volume.
-Для уже существующего volume запускайте `docker compose exec mail-mcp migrate`.
+Для уже существующего volume запускайте `docker compose exec mail-mcp /mail-mcp migrate`.
 Архитектура использует ручную constructor injection: domain → app ports ← IMAP/PostgreSQL adapters, MCP вызывает app service.
 Модуль пока локальный `mail-mcp`: после создания удалённого репозитория замените его module path и imports.
 
@@ -106,8 +108,45 @@ Caddy получает TLS-сертификат и проксирует `/mcp` �
 `/metrics`, `/health`, `/ready` остаются доступны только через локальный backend; `/metrics` требует `MCP_AUTH_TOKEN`.
 Можно использовать свой TLS reverse proxy с поддержкой SSE без буферизации и timeout выше времени tool call.
 
+На VPS с другими сервисами сначала проверьте владельцев портов `80`, `443` и `MCP_HOST_PORT`.
+Если `80/443` уже обслуживает общий reverse proxy, запускайте только backend и PostgreSQL:
+
+```sh
+docker compose up -d --build postgres mail-mcp
+```
+
+Добавьте домен MCP в конфигурацию существующего proxy, сохранив маршруты других сервисов.
+Для proxy на хосте upstream — `127.0.0.1:18080` (или выбранный `MCP_HOST_PORT`).
+Для proxy в контейнере `127.0.0.1` указывает на сам proxy: подключите его к сети MCP и используйте `mail-mcp:8080` либо отдельный уникальный сетевой alias.
+Встроенный Caddy также использует `mail-mcp:8080`, поэтому его Caddyfile при смене `MCP_HOST_PORT` не меняется.
+
+Для существующего proxy в Docker предусмотрен `deploy/compose.shared-proxy.yml`.
+Укажите в `.env` `MCP_PROXY_NETWORK=<имя существующей сети proxy>` и, если собственного override ещё нет, скопируйте этот файл:
+
+```sh
+cp deploy/compose.shared-proxy.yml docker-compose.override.yml
+docker compose config --quiet
+docker compose up -d postgres mail-mcp
+```
+
+Compose автоматически загружает `docker-compose.override.yml` при следующих обычных запусках.
+Если override уже существует, добавьте туда секции из overlay, сохранив прежние настройки.
+MCP получает alias `imap-mcp-backend` в сети proxy; PostgreSQL остаётся в исходной сети MCP.
+Overlay задаёт базе alias `imap-mcp-db` и использует его в `DATABASE_URL`, чтобы имя `postgres` не конфликтовало с базами других проектов в общей сети.
+При первом применении overlay Compose пересоздаёт контейнер PostgreSQL для добавления alias; существующий volume с данными сохраняется.
+Добавьте блок из `deploy/Caddyfile.shared.example` в реальный Caddyfile существующего proxy, сохранив остальные домены.
+Перед изменением сделайте резервную копию файла, после изменения проверьте его командой `caddy validate` и примените через `caddy reload`.
+Сначала проверяйте backend и новый HTTPS endpoint; затем проверьте существующие домены.
+При использовании явных `-f` включайте overlay в список файлов: автоматическое чтение override в этом случае не применяется.
+
 **Статический Bearer не является способом подключения приватной почты к ChatGPT UI.** Он подходит SDK-клиентам и MCP Inspector, которые умеют отправить заданный Authorization header.
-Для ChatGPT включён режим `AUTH_MODE=oidc` с внешним OAuth 2.1/OIDC сервером:
+Для ChatGPT добавлен встроенный режим `AUTH_MODE=oauth` с входом владельца,
+PKCE S256, refresh/revoke и сохранением хешей токенов в PostgreSQL.
+Настройка `.env`, общего Caddy, GitHub Actions → GHCR → SSH и подключение ChatGPT
+описаны в [docs/deployment.md](docs/deployment.md). Готовый prod Compose использует
+прежний volume проекта `imap_mcp` и отдельный alias базы `imap-mcp-db`.
+
+Для внешнего authorization server остаётся режим `AUTH_MODE=oidc`:
 
 ```dotenv
 AUTH_MODE=oidc
@@ -126,7 +165,8 @@ OIDC_ALLOWED_SUBJECT=<subject владельца>
 MCP публикует `/.well-known/oauth-protected-resource` и `/.well-known/oauth-protected-resource/mcp`, а при 401 возвращает `WWW-Authenticate` с metadata URL.
 Проверяются подпись, issuer, audience, expiry, not-before, subject владельца и `mail.read`.
 В OIDC режиме статический `MCP_AUTH_TOKEN` не даёт доступ к `/mcp`; он используется только для локальных метрик.
-Встроенного authorization server/login UI/регистрации OAuth клиентов нет: эту часть выполняет внешний провайдер.
+В режиме `oidc` выдачей токенов и входом управляет внешний провайдер.
+Встроенный сервер авторизации и страница входа используются в режиме `oauth`.
 Сервис рассчитан на одного владельца и N его ящиков; многопользовательская изоляция ящиков — отдельное расширение.
 
 После настройки issuer и HTTPS добавьте endpoint в ChatGPT через Plugins либо Apps/Create в Developer mode, выберите OAuth, пройдите авторизацию, выполните Scan Tools и создайте подключение. Доступные пункты зависят от плана и workspace permissions.
@@ -216,7 +256,10 @@ TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/testdb?sslmode=disabl
 ```
 
 По умолчанию тесты поднимают TLS IMAP и OIDC/JWKS сервера на loopback и MCP SDK-клиент по Streamable HTTP.
-Проверяются шифрование/подмена ciphertext, русский RFC 2047, MIME base64/quoted-printable/KOI8-R, HTML-only, multipart, attachment metadata, read-only команды и Seen, pool, account selection, multi-account partial failures/timeouts, cursor, empty pages, thread grouping, OAuth token checks, tools/list и tools/call.
+Проверяются шифрование/подмена ciphertext, русский RFC 2047, MIME base64/quoted-printable/KOI8-R, HTML-only, multipart, attachment metadata, read-only команды и Seen, pool, account selection, multi-account partial failures/timeouts, cursor, empty pages, thread grouping, OIDC token checks, tools/list и tools/call.
+Для встроенного OAuth проверяются PKCE/CSRF, одноразовость кодов, refresh/revoke,
+привязка к клиенту/resource, скрытие секретов и чтение через MCP SDK после OAuth
+с реальным временным PostgreSQL и тестовым TLS IMAP-сервером.
 PostgreSQL-тест с тегом `integration` требует TEST_DATABASE_URL и создаёт/удаляет только свой случайно названный schema.
 Реальные Mail.ru credentials, public DNS/TLS и OAuth-подключение ChatGPT проверяются отдельно на deployment.
 

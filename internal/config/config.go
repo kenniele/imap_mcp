@@ -7,14 +7,17 @@ import (
 	"os"
 	"strings"
 
+	"mail-mcp/internal/oauth"
 	"mail-mcp/internal/secrets"
 )
 
 type Config struct {
-	HTTPAddr, DatabaseURL, AuthToken             string
-	AuthMode, OIDCIssuer, PublicURL, OIDCSubject string
-	Key                                          []byte
-	LogLevel                                     slog.Level
+	HTTPAddr, DatabaseURL, AuthToken                  string
+	AuthMode, OIDCIssuer, PublicURL, OIDCSubject      string
+	OAuthClientID, OAuthClientSecret, OAuthLoginToken string
+	OAuthRedirectURIs                                 []string
+	Key                                               []byte
+	LogLevel                                          slog.Level
 }
 
 func Load(server bool) (Config, error) {
@@ -42,8 +45,39 @@ func Load(server bool) (Config, error) {
 	if c.AuthMode == "" {
 		c.AuthMode = "bearer"
 	}
-	if c.AuthMode != "bearer" && c.AuthMode != "oidc" {
-		return c, errors.New("AUTH_MODE must be bearer or oidc")
+	if c.AuthMode != "bearer" && c.AuthMode != "oidc" && c.AuthMode != "oauth" {
+		return c, errors.New("AUTH_MODE must be bearer, oauth or oidc")
+	}
+	if c.AuthMode == "oauth" && server {
+		c.PublicURL = os.Getenv("MCP_PUBLIC_URL")
+		u, err := url.Parse(c.PublicURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "/mcp" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return c, errors.New("MCP_PUBLIC_URL must be an HTTPS URL with the exact /mcp path")
+		}
+		c.OAuthClientID = os.Getenv("MCP_OAUTH_CLIENT_ID")
+		c.OAuthClientSecret = os.Getenv("MCP_OAUTH_CLIENT_SECRET")
+		c.OAuthLoginToken = os.Getenv("MCP_OAUTH_LOGIN_TOKEN")
+		for _, uri := range strings.Split(os.Getenv("MCP_OAUTH_REDIRECT_URIS"), ",") {
+			if uri = strings.TrimSpace(uri); uri != "" {
+				c.OAuthRedirectURIs = append(c.OAuthRedirectURIs, uri)
+			}
+		}
+		if c.OAuthClientID == "" || len(c.OAuthClientSecret) < 32 || len(c.OAuthLoginToken) < 32 || c.OAuthClientSecret == c.OAuthLoginToken {
+			return c, errors.New("OAuth requires MCP_OAUTH_CLIENT_ID and distinct client/login secrets of at least 32 characters")
+		}
+		if c.OAuthClientSecret == c.AuthToken || c.OAuthLoginToken == c.AuthToken {
+			return c, errors.New("OAuth secrets must differ from MCP_AUTH_TOKEN")
+		}
+		if len(c.OAuthRedirectURIs) == 0 {
+			return c, errors.New("MCP_OAUTH_REDIRECT_URIS must contain at least one exact HTTPS callback")
+		}
+		if _, err := oauth.ValidateConfig(oauth.Config{
+			BaseURL:  strings.TrimSuffix(c.PublicURL, "/mcp"),
+			ClientID: c.OAuthClientID, ClientSecret: c.OAuthClientSecret,
+			LoginToken: c.OAuthLoginToken, RedirectURIs: c.OAuthRedirectURIs,
+		}); err != nil {
+			return c, err
+		}
 	}
 	if c.AuthMode == "oidc" && server {
 		c.OIDCIssuer = os.Getenv("OIDC_ISSUER")

@@ -15,17 +15,29 @@ import (
 )
 
 type Readiness interface{ Ping(context.Context) error }
+type Security interface {
+	Protect(http.Handler) http.Handler
+}
 
-func Handler(service *app.Service, ready Readiness, token string, metrics *observability.Metrics, logger *slog.Logger, security *auth.OIDC) http.Handler {
-	server := sdk.NewServer(&sdk.Implementation{Name: "multi-account-mail", Version: "0.1.0"}, nil)
+func Handler(service *app.Service, ready Readiness, token string, metrics *observability.Metrics, logger *slog.Logger, security Security) http.Handler {
+	server := sdk.NewServer(&sdk.Implementation{Name: "multi-account-mail", Version: "0.2.0"}, nil)
 	tools.Register(server, service, metrics, logger)
 	transport := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{JSONResponse: true, SessionTimeout: 10 * time.Minute})
 	mux := http.NewServeMux()
 	protect := func(next http.Handler) http.Handler { return auth.Bearer(token, next) }
 	if security != nil {
 		protect = security.Protect
-		mux.HandleFunc("GET /.well-known/oauth-protected-resource", security.Metadata)
-		mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", security.Metadata)
+		if metadata, ok := security.(interface {
+			Metadata(http.ResponseWriter, *http.Request)
+		}); ok {
+			mux.HandleFunc("GET /.well-known/oauth-protected-resource", metadata.Metadata)
+			mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", metadata.Metadata)
+		}
+		if oauth, ok := security.(interface{ Routes() http.Handler }); ok {
+			routes := oauth.Routes()
+			mux.Handle("/.well-known/oauth-authorization-server", routes)
+			mux.Handle("/oauth/mcp/", routes)
+		}
 	}
 	mux.Handle("/mcp", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)

@@ -12,8 +12,12 @@ services:
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
       OIDC_ALLOWED_SUBJECT: ${OIDC_ALLOWED_SUBJECT:-}
+      MCP_OAUTH_CLIENT_ID: ${MCP_OAUTH_CLIENT_ID:-}
+      MCP_OAUTH_CLIENT_SECRET: ${MCP_OAUTH_CLIENT_SECRET:-}
+      MCP_OAUTH_LOGIN_TOKEN: ${MCP_OAUTH_LOGIN_TOKEN:-}
+      MCP_OAUTH_REDIRECT_URIS: ${MCP_OAUTH_REDIRECT_URIS:-}
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${MCP_HOST_PORT:-18080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,6 +35,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/001_accounts.sql:/docker-entrypoint-initdb.d/001_accounts.sql:ro
+      - ./migrations/002_oauth.sql:/docker-entrypoint-initdb.d/002_oauth.sql:ro
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U mailmcp -d mailmcp"]
       interval: 5s

@@ -5,3 +5,7 @@
 /coverage.out
 /.cache/
 *.log
+__pycache__/
+/deploy/releases/
+/deploy/current
+/.deploy.lock

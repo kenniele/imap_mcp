@@ -1,0 +1,22 @@
+# Optional overlay for an existing reverse proxy on the same Docker host.
+# Set MCP_PROXY_NETWORK to a network already used by the proxy.
+# Copy to docker-compose.override.yml for automatic loading by docker compose.
+services:
+  mail-mcp:
+    environment:
+      DATABASE_URL: postgres://mailmcp:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@imap-mcp-db:5432/mailmcp?sslmode=disable
+    networks:
+      default: {}
+      shared_proxy:
+        aliases:
+          - imap-mcp-backend
+  postgres:
+    networks:
+      default:
+        aliases:
+          - imap-mcp-db
+
+networks:
+  shared_proxy:
+    external: true
+    name: ${MCP_PROXY_NETWORK:?set MCP_PROXY_NETWORK to the existing proxy network}
