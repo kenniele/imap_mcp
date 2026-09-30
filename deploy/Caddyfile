@@ -1,0 +1,9 @@
+{$MCP_DOMAIN} {
+    @public path /mcp /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/mcp
+    handle @public {
+        reverse_proxy mail-mcp:8080
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
