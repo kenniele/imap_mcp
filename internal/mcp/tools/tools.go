@@ -80,8 +80,10 @@ func add[In, Out any](server *sdk.Server, metrics *observability.Metrics, logger
 		start := time.Now()
 		out, count, err := fn(ctx, in)
 		result := "ok"
+		accountErrorCount := 0
 		if search, ok := any(out).(domain.SearchResult); ok && len(search.Errors) > 0 {
 			result = "partial"
+			accountErrorCount = len(search.Errors)
 		}
 		errorText := ""
 		if err != nil {
@@ -94,7 +96,7 @@ func add[In, Out any](server *sdk.Server, metrics *observability.Metrics, logger
 			metrics.MCPDuration.WithLabelValues(name).Observe(time.Since(start).Seconds())
 		}
 		if logger != nil {
-			logger.InfoContext(ctx, "mail tool completed", "request_id", observability.RequestID(ctx), "tool", name, "duration_ms", time.Since(start).Milliseconds(), "result_count", count, "error", errorText)
+			logger.InfoContext(ctx, "mail tool completed", "request_id", observability.RequestID(ctx), "tool", name, "duration_ms", time.Since(start).Milliseconds(), "result", result, "result_count", count, "account_error_count", accountErrorCount, "error", errorText)
 		}
 		return nil, out, err
 	})

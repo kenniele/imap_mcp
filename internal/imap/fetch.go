@@ -18,13 +18,15 @@ import (
 	"github.com/emersion/go-message/charset"
 )
 
-func fetchMetadata(c *connection, uids []imaplib.UID) ([]*imapclient.FetchMessageBuffer, error) {
+func fetchMetadata(ctx context.Context, c *connection, uids []imaplib.UID) ([]*imapclient.FetchMessageBuffer, error) {
 	if len(uids) == 0 {
 		return nil, nil
 	}
-	msgs, err := c.client.Fetch(imaplib.UIDSetNum(uids...), &imaplib.FetchOptions{UID: true, Envelope: true, Flags: true, InternalDate: true, RFC822Size: true, BodyStructure: &imaplib.FetchItemBodyStructure{Extended: true}}).Collect()
+	msgs, err := step(ctx, "uid_fetch_metadata", func() ([]*imapclient.FetchMessageBuffer, error) {
+		return c.client.Fetch(imaplib.UIDSetNum(uids...), &imaplib.FetchOptions{UID: true, Envelope: true, Flags: true, InternalDate: true, RFC822Size: true, BodyStructure: &imaplib.FetchItemBodyStructure{Extended: true}}).Collect()
+	}, "requested_count", len(uids))
 	if err != nil {
-		return nil, errors.New("imap operation failed")
+		return nil, err
 	}
 	return msgs, nil
 }
@@ -119,18 +121,18 @@ func partPath(path []int) string {
 	return strings.Join(p, ".")
 }
 func (p *Provider) Get(ctx context.Context, a domain.Account, folder string, uid, validity uint32, attachments bool) (out domain.Content, err error) {
-	err = p.with(ctx, a, "get", func(c *connection) error {
-		selected, e := selectFolder(c, folder, validity)
+	err = p.with(ctx, a, "get", func(ctx context.Context, c *connection) error {
+		selected, e := selectFolder(ctx, c, folder, validity)
 		if e != nil {
 			return e
 		}
-		out, e = getContent(c, a, folder, uid, selected.UIDValidity, attachments)
+		out, e = getContent(ctx, c, a, folder, uid, selected.UIDValidity, attachments)
 		return e
 	})
 	return out, err
 }
-func getContent(c *connection, a domain.Account, folder string, uid, validity uint32, attachments bool) (domain.Content, error) {
-	bufs, err := fetchMetadata(c, []imaplib.UID{imaplib.UID(uid)})
+func getContent(ctx context.Context, c *connection, a domain.Account, folder string, uid, validity uint32, attachments bool) (domain.Content, error) {
+	bufs, err := fetchMetadata(ctx, c, []imaplib.UID{imaplib.UID(uid)})
 	if err != nil {
 		return domain.Content{}, err
 	}
@@ -143,7 +145,7 @@ func getContent(c *connection, a domain.Account, folder string, uid, validity ui
 	if attachments {
 		out.Attachments = atts
 	}
-	header, err := fetchSection(c, uid, &imaplib.FetchItemBodySection{Specifier: imaplib.PartSpecifierHeader, Peek: true, Partial: &imaplib.SectionPartial{Size: 64 * 1024}})
+	header, err := fetchSection(ctx, c, uid, &imaplib.FetchItemBodySection{Specifier: imaplib.PartSpecifierHeader, Peek: true, Partial: &imaplib.SectionPartial{Size: 64 * 1024}})
 	if err != nil {
 		return out, err
 	}
@@ -176,7 +178,7 @@ func getContent(c *connection, a domain.Account, folder string, uid, validity ui
 		if path == nil {
 			mimeSpec = imaplib.PartSpecifierHeader
 		}
-		h, e := fetchSection(c, uid, &imaplib.FetchItemBodySection{Part: path, Specifier: mimeSpec, Peek: true, Partial: &imaplib.SectionPartial{Size: 16 * 1024}})
+		h, e := fetchSection(ctx, c, uid, &imaplib.FetchItemBodySection{Part: path, Specifier: mimeSpec, Peek: true, Partial: &imaplib.SectionPartial{Size: 16 * 1024}})
 		if e != nil {
 			return out, e
 		}
@@ -185,7 +187,7 @@ func getContent(c *connection, a domain.Account, folder string, uid, validity ui
 			out.Truncated = true
 			break
 		}
-		b, e := fetchSection(c, uid, &imaplib.FetchItemBodySection{Part: path, Specifier: spec, Peek: true, Partial: &imaplib.SectionPartial{Size: int64(maxEncoded)}})
+		b, e := fetchSection(ctx, c, uid, &imaplib.FetchItemBodySection{Part: path, Specifier: spec, Peek: true, Partial: &imaplib.SectionPartial{Size: int64(maxEncoded)}})
 		if e != nil {
 			return out, e
 		}
@@ -198,7 +200,7 @@ func getContent(c *connection, a domain.Account, folder string, uid, validity ui
 			}
 		}
 		raw := append(append(bytes.TrimRight(h, "\r\n"), []byte("\r\n\r\n")...), b...)
-		parsed, e := ParseMIME(raw)
+		parsed, e := step(ctx, "mime_parse", func() (MIMEBody, error) { return ParseMIME(raw) }, "source_bytes", len(raw))
 		if e != nil {
 			return out, e
 		}
@@ -229,10 +231,12 @@ func getContent(c *connection, a domain.Account, folder string, uid, validity ui
 	}
 	return out, nil
 }
-func fetchSection(c *connection, uid uint32, section *imaplib.FetchItemBodySection) ([]byte, error) {
-	msgs, err := c.client.Fetch(imaplib.UIDSetNum(imaplib.UID(uid)), &imaplib.FetchOptions{UID: true, BodySection: []*imaplib.FetchItemBodySection{section}}).Collect()
+func fetchSection(ctx context.Context, c *connection, uid uint32, section *imaplib.FetchItemBodySection) ([]byte, error) {
+	msgs, err := step(ctx, "uid_fetch_section", func() ([]*imapclient.FetchMessageBuffer, error) {
+		return c.client.Fetch(imaplib.UIDSetNum(imaplib.UID(uid)), &imaplib.FetchOptions{UID: true, BodySection: []*imaplib.FetchItemBodySection{section}}).Collect()
+	}, "peek", section.Peek, "section_kind", string(section.Specifier))
 	if err != nil {
-		return nil, errors.New("imap operation failed")
+		return nil, err
 	}
 	if len(msgs) != 1 {
 		return nil, errors.New("message not found")
@@ -258,7 +262,7 @@ func buffersForUID(buffers []*imapclient.FetchMessageBuffer, uid imaplib.UID) *i
 	}
 	return nil
 }
-func fetchPreview(c *connection, uid uint32, buf *imapclient.FetchMessageBuffer) (string, error) {
+func fetchPreview(ctx context.Context, c *connection, uid uint32, buf *imapclient.FetchMessageBuffer) (string, error) {
 	if buf == nil {
 		return "", nil
 	}
@@ -281,11 +285,11 @@ func fetchPreview(c *connection, uid uint32, buf *imapclient.FetchMessageBuffer)
 		spec = imaplib.PartSpecifierText
 		mimeSpec = imaplib.PartSpecifierHeader
 	}
-	h, e := fetchSection(c, uid, &imaplib.FetchItemBodySection{Part: path, Specifier: mimeSpec, Peek: true, Partial: &imaplib.SectionPartial{Size: 16 * 1024}})
+	h, e := fetchSection(ctx, c, uid, &imaplib.FetchItemBodySection{Part: path, Specifier: mimeSpec, Peek: true, Partial: &imaplib.SectionPartial{Size: 16 * 1024}})
 	if e != nil {
 		return "", e
 	}
-	b, e := fetchSection(c, uid, &imaplib.FetchItemBodySection{Part: path, Specifier: spec, Peek: true, Partial: &imaplib.SectionPartial{Size: 4096}})
+	b, e := fetchSection(ctx, c, uid, &imaplib.FetchItemBodySection{Part: path, Specifier: spec, Peek: true, Partial: &imaplib.SectionPartial{Size: 4096}})
 	if e != nil {
 		return "", e
 	}
@@ -295,7 +299,7 @@ func fetchPreview(c *connection, uid uint32, buf *imapclient.FetchMessageBuffer)
 		}
 	}
 	raw := append(append(bytes.TrimRight(h, "\r\n"), []byte("\r\n\r\n")...), b...)
-	body, e := ParseMIME(raw)
+	body, e := step(ctx, "mime_parse", func() (MIMEBody, error) { return ParseMIME(raw) }, "source_bytes", len(raw), "preview", true)
 	if e != nil {
 		return "", nil
 	} // A malformed preview must not hide otherwise searchable headers.

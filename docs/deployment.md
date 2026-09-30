@@ -187,6 +187,36 @@ Access token действует час, refresh ротируется. Смена
 
 Официальные требования: [OAuth в ChatGPT MCP](https://developers.openai.com/plugins/build/auth).
 
+## Диагностика IMAP
+
+Обычный `LOG_LEVEL=info` выводит итог инструмента и каждого аккаунта. Для
+частичных результатов итог содержит `result=partial` и `account_error_count`;
+пустое поле `error` у инструмента не означает успех всех ящиков.
+
+У ошибки аккаунта есть `error_stage`, `error_kind`, `imap_status`, `imap_code`,
+`error_types` (типы внутренних ошибок без их текста) и `parser_area`
+(фиксированная метка части ответа, например `envelope` или `body_structure`).
+Например, `error_stage=examine`, `imap_status=NO`, `imap_code=NOPERM` означает
+отказ при открытии папки для чтения. Неизвестные коды провайдера заменяются на
+`OTHER`. Сырой текст ответа не сохраняется.
+
+Для подробной диагностики установи `LOG_LEVEL=debug` в `.env` и пересоздай
+только `mail-mcp` с текущим образом через production compose. Появятся начало
+и завершение этапов `pool_acquire`, `decrypt_credentials`, `tls_connect`,
+`greeting`, `login`, `list_folders`, `examine`, `uid_search`,
+`uid_fetch_metadata`, `uid_fetch_section` и `mime_parse`. Все строки связаны `request_id`;
+также выводятся alias аккаунта, инструмент, длительность, оставшийся бюджет
+времени, повторное использование соединения и числовые параметры операции.
+Пароли, токены, адреса отправителей, темы, запросы поиска, имена папок и
+содержимое писем не логируются даже в debug.
+
+```bash
+docker logs --since=10m --tail=200 -f imap_mcp-mail-mcp-1
+```
+
+После диагностики можно вернуть `LOG_LEVEL=info` и пересоздать только
+`mail-mcp`. Уровень логов читается при запуске процесса.
+
 ## Откат приложения
 
 Бандлы прежних успешных версий сохраняются. Чтобы вернуться к проверенной версии,

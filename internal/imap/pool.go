@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"log/slog"
 	"mime"
 	"net"
 	"strconv"
@@ -100,6 +101,7 @@ func (p *Pool) Acquire(ctx context.Context, a domain.Account) (*connection, erro
 		}
 		if !p.closed && !closed && c.fingerprint == fp && time.Since(c.used) < 5*time.Minute {
 			p.mu.Unlock()
+			slog.DebugContext(ctx, "imap connection acquired", append(traceAttrs(ctx), "connection_reused", true)...)
 			return c, nil
 		}
 		delete(b.all, c)
@@ -126,40 +128,34 @@ func (p *Pool) Acquire(ctx context.Context, a domain.Account) (*connection, erro
 	}
 	b.all[c] = true
 	p.mu.Unlock()
+	slog.DebugContext(ctx, "imap connection acquired", append(traceAttrs(ctx), "connection_reused", false)...)
 	return c, nil
 }
 func (p *Pool) dial(ctx context.Context, a domain.Account) (*connection, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	password, err := p.cipher.Decrypt(a.Secret, "account:"+a.ID)
+	password, err := step(ctx, "decrypt_credentials", func() ([]byte, error) { return p.cipher.Decrypt(a.Secret, "account:"+a.ID) })
 	if err != nil {
-		return nil, errors.New("account credential decryption failed")
+		return nil, err
 	}
 	defer clear(password)
 	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: a.IMAPHost, RootCAs: p.roots}}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(a.IMAPHost, strconv.Itoa(a.IMAPPort)))
+	conn, err := step(ctx, "tls_connect", func() (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp", net.JoinHostPort(a.IMAPHost, strconv.Itoa(a.IMAPPort)))
+	}, "port", a.IMAPPort)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errors.New("imap TLS connection failed")
+		return nil, err
 	}
 	c := &connection{conn: conn, client: imapclient.New(conn, &imapclient.Options{WordDecoder: &mime.WordDecoder{CharsetReader: charset.Reader}})}
 	stop := watch(ctx, c)
 	defer stop()
-	if err = c.client.WaitGreeting(); err != nil {
+	if err = commandStep(ctx, "greeting", c.client.WaitGreeting); err != nil {
 		c.close()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errors.New("imap operation failed")
+		return nil, err
 	}
-	if err = c.client.Login(a.Username, string(password)).Wait(); err != nil {
+	if err = commandStep(ctx, "login", func() error { return c.client.Login(a.Username, string(password)).Wait() }); err != nil {
 		c.close()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errors.New("imap authentication failed")
+		return nil, err
 	}
 	return c, nil
 }

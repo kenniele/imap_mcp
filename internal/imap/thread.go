@@ -2,7 +2,6 @@ package imap
 
 import (
 	"context"
-	"errors"
 	"sort"
 
 	"mail-mcp/internal/app"
@@ -34,12 +33,12 @@ func threadCriteria(ids []string) *imaplib.SearchCriteria {
 }
 func (p *Provider) Thread(ctx context.Context, a domain.Account, folder string, uid, validity uint32, limit int) (out []domain.Content, truncated bool, err error) {
 	out = []domain.Content{}
-	err = p.with(ctx, a, "thread", func(c *connection) error {
-		selected, e := selectFolder(c, folder, validity)
+	err = p.with(ctx, a, "thread", func(ctx context.Context, c *connection) error {
+		selected, e := selectFolder(ctx, c, folder, validity)
 		if e != nil {
 			return e
 		}
-		anchor, e := getContent(c, a, folder, uid, selected.UIDValidity, true)
+		anchor, e := getContent(ctx, c, a, folder, uid, selected.UIDValidity, true)
 		if e != nil {
 			return e
 		}
@@ -68,9 +67,9 @@ func (p *Provider) Thread(ctx context.Context, a domain.Account, folder string, 
 				ids = ids[:64]
 				truncated = true
 			}
-			data, e := c.client.UIDSearch(threadCriteria(ids), nil).Wait()
+			data, e := step(ctx, "uid_search_thread", func() (*imaplib.SearchData, error) { return c.client.UIDSearch(threadCriteria(ids), nil).Wait() }, "reference_count", len(ids), "round", round)
 			if e != nil {
-				return errors.New("imap operation failed")
+				return e
 			}
 			uids := data.AllUIDs()
 			if len(uids) > MaxScan {
@@ -86,7 +85,7 @@ func (p *Provider) Thread(ctx context.Context, a domain.Account, folder string, 
 			if len(newUIDs) == 0 {
 				break
 			}
-			bufs, e := fetchMetadata(c, newUIDs)
+			bufs, e := fetchMetadata(ctx, c, newUIDs)
 			if e != nil {
 				return e
 			}
@@ -96,7 +95,7 @@ func (p *Provider) Thread(ctx context.Context, a domain.Account, folder string, 
 					break
 				}
 				m := domain.Content{Message: summary(a, folder, selected.UIDValidity, buf)}
-				h, e := fetchSection(c, m.UID, &imaplib.FetchItemBodySection{Specifier: imaplib.PartSpecifierHeader, Peek: true, Partial: &imaplib.SectionPartial{Size: 64 * 1024}})
+				h, e := fetchSection(ctx, c, m.UID, &imaplib.FetchItemBodySection{Specifier: imaplib.PartSpecifierHeader, Peek: true, Partial: &imaplib.SectionPartial{Size: 64 * 1024}})
 				if e != nil {
 					return e
 				}
@@ -119,7 +118,7 @@ func (p *Provider) Thread(ctx context.Context, a domain.Account, folder string, 
 				out = append(out, anchor)
 				continue
 			}
-			content, e := getContent(c, a, folder, m.UID, selected.UIDValidity, true)
+			content, e := getContent(ctx, c, a, folder, m.UID, selected.UIDValidity, true)
 			if e != nil {
 				return e
 			}

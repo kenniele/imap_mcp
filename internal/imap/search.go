@@ -2,7 +2,6 @@ package imap
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"time"
 
@@ -43,8 +42,8 @@ func SearchCriteria(q domain.SearchQuery) *imaplib.SearchCriteria {
 }
 func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.SearchQuery, pos domain.Position) (out domain.Page, err error) {
 	out.Messages = []domain.Message{}
-	err = p.with(ctx, a, "search", func(c *connection) error {
-		selected, e := selectFolder(c, q.Folder, pos.UIDValidity)
+	err = p.with(ctx, a, "search", func(ctx context.Context, c *connection) error {
+		selected, e := selectFolder(ctx, c, q.Folder, pos.UIDValidity)
 		if e != nil {
 			return e
 		}
@@ -60,9 +59,9 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 		}
 		criteria := SearchCriteria(q)
 		criteria.UID = []imaplib.UIDSet{{{Start: 1, Stop: imaplib.UID(pos.BeforeUID - 1)}}}
-		data, e := c.client.UIDSearch(criteria, nil).Wait()
+		data, e := step(ctx, "uid_search", func() (*imaplib.SearchData, error) { return c.client.UIDSearch(criteria, nil).Wait() }, "text_filter", q.Query != "", "limit", q.Limit, "preview", q.Preview)
 		if e != nil {
-			return errors.New("imap operation failed")
+			return e
 		}
 		uids := data.AllUIDs()
 		sort.Slice(uids, func(i, j int) bool { return uids[i] > uids[j] })
@@ -72,7 +71,7 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 		}
 		count := min(MaxScan, len(uids))
 		candidates := uids[:count]
-		buffers, e := fetchMetadata(c, candidates)
+		buffers, e := fetchMetadata(ctx, c, candidates)
 		if e != nil {
 			return e
 		}
@@ -93,7 +92,7 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 				continue
 			}
 			if q.Preview {
-				m.Preview, e = fetchPreview(c, uint32(uid), buffersForUID(buffers, uid))
+				m.Preview, e = fetchPreview(ctx, c, uint32(uid), buffersForUID(buffers, uid))
 				if e != nil {
 					return e
 				}

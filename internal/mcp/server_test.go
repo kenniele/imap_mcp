@@ -114,6 +114,42 @@ func TestDiscoveryWithoutSession(t *testing.T) {
 	}
 }
 
+func TestToolLogReportsAccountFailure(t *testing.T) {
+	f := testutil.NewIMAP(t)
+	good, _ := f.Account(t, "personal", []string{testutil.Plain})
+	broken, _ := f.Account(t, "university", nil)
+	var err error
+	broken.Secret, err = f.Cipher.Encrypt([]byte("wrong-password"), "account:"+broken.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := testStore{good, broken}
+	pool := imap.NewPool(f.Cipher, f.Roots)
+	t.Cleanup(pool.Close)
+	metrics := observability.NewMetrics()
+	service := app.New(accounts, &imap.Provider{Pool: pool, Metrics: metrics}, f.Cipher)
+	var output bytes.Buffer
+	token := strings.Repeat("t", 32)
+	handler := Handler(service, accounts, token, metrics, slog.New(slog.NewJSONHandler(&output, nil)), nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mail_recent","arguments":{"limit":1}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("MCP-Protocol-Version", "2025-06-18")
+	req.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	var row map[string]any
+	if err := json.Unmarshal(output.Bytes(), &row); err != nil {
+		t.Fatal(err)
+	}
+	if row["result"] != "partial" || row["account_error_count"] != float64(1) || row["result_count"] != float64(1) {
+		t.Fatal("partial account failure was logged as a successful tool")
+	}
+	if row["request_id"] == "" || row["tool"] != "mail_recent" {
+		t.Fatal("tool completion lacks request correlation")
+	}
+}
+
 func TestStreamableHTTPTools(t *testing.T) {
 	fixture := testutil.NewIMAP(t)
 	accounts := testStore{}
