@@ -1,5 +1,35 @@
 # OAuth и деплой на VPS
 
+Production перенесён на сервер Pulse 16 октября 2026: `deploy@148.135.208.115`,
+каталог `/home/deploy/imap_mcp`, Compose `imap_mcp`, сеть `proxy`.
+Домен остаётся `https://imap-mcp.chickenkiller.com/mcp`.
+Общий proxy — `pulse-proxy-caddy-1`, его конфигурация находится в
+`/home/deploy/pulse-proxy/Caddyfile`. БД PostgreSQL 17 не публикуется наружу.
+
+Release разрешает commit SHA в digest, сохраняет `deploy/current/image.digest`,
+проверяет локальный `/ready`, HTTPS через Caddy именно нового сервера и внешний
+OAuth endpoint. Предыдущий bundle сохраняется в `deploy/previous`.
+`MCP_POSTGRES_IMAGE` позволяет закрепить PostgreSQL по digest.
+
+Операторская команда для текущего выпуска:
+
+```bash
+root=/home/deploy/imap_mcp
+export MCP_IMAGE=$(cat "$root/deploy/current/image.digest")
+docker compose --project-name imap_mcp --project-directory "$root" \
+  --env-file "$root/.env" -f "$root/deploy/current/docker-compose.prod.yml" ps
+```
+
+Старое приложение на `88.218.68.176` остановлено. Его Caddy временно
+проксирует этот домен на новый сервер для клиентов со старым DNS.
+Старую БД нельзя запускать как актуальную после выдачи новых OAuth tokens:
+для обратного переноса нужен свежий дамп с активного сервера.
+
+## Историческая настройка до переноса
+
+Команды ниже документируют прежний сервер. Не используйте их адреса,
+пути и proxy network для текущего production; актуальные значения приведены выше.
+
 Продакшен: `https://imap-mcp.chickenkiller.com/mcp`, проект
 `kenniele/imap_mcp`, VPS `fitlog@88.218.68.176`, папка `/home/fitlog/imap_mcp`.
 Это отдельный Compose-проект `imap_mcp` рядом с FitLog.
