@@ -4,8 +4,8 @@ set -euo pipefail
 # Arguments are supplied by CI; the server's .env is never transferred or printed.
 deploy_root=${1:?usage: release.sh DEPLOY_ROOT IMAGE}
 release_image=${2:?usage: release.sh DEPLOY_ROOT IMAGE}
-if [[ ! "$release_image" =~ ^ghcr\.io/kenniele/imap_mcp:[a-f0-9]{40}$ ]]; then
-  echo 'Expected an immutable imap_mcp image tagged with a full commit SHA' >&2
+if [[ ! "$release_image" =~ ^ghcr\.io/kenniele/imap_mcp(:[a-f0-9]{40}|@sha256:[a-f0-9]{64})$ ]]; then
+  echo 'Expected an imap_mcp commit SHA tag or content digest' >&2
   exit 1
 fi
 deploy_root=$(cd "$deploy_root" && pwd)
@@ -14,7 +14,10 @@ test -f "$deploy_root/.env"
 exec 9>"$deploy_root/.deploy.lock"
 flock -w 120 9
 
-export MCP_IMAGE="$release_image"
+docker pull "$release_image" >/dev/null
+resolved_image=$(docker image inspect "$release_image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk '/^ghcr.io\/kenniele\/imap_mcp@sha256:/ {print; exit}')
+[[ "$resolved_image" =~ ^ghcr\.io/kenniele/imap_mcp@sha256:[a-f0-9]{64}$ ]]
+export MCP_IMAGE="$resolved_image"
 compose=(docker compose --project-name imap_mcp --project-directory "$deploy_root"
   --env-file "$deploy_root/.env" -f "$release_dir/docker-compose.prod.yml")
 "${compose[@]}" config --quiet
@@ -39,6 +42,11 @@ fi
 public_url=$("${compose[@]}" config --format json | python3 -c \
   'import json,sys; print(json.load(sys.stdin)["services"]["mail-mcp"]["environment"]["MCP_PUBLIC_URL"])')
 issuer=${public_url%/mcp}
+host=$(python3 -c 'import sys,urllib.parse;u=urllib.parse.urlparse(sys.argv[1]);assert u.scheme=="https" and u.hostname;print(u.hostname)' "$issuer")
+# Verify this server's Caddy as well as the public origin.
+curl -fsS --resolve "$host:443:127.0.0.1" --max-time 15 "$issuer/.well-known/oauth-authorization-server" >/dev/null
+local_status=$(curl -sS --resolve "$host:443:127.0.0.1" --max-time 15 -o /dev/null -w '%{http_code}' "$public_url")
+[[ "$local_status" == 401 ]]
 curl -fsS --proto '=https' --retry 5 --retry-delay 2 --max-time 15 \
   "$issuer/.well-known/oauth-authorization-server" | python3 -c \
   'import json,sys; m=json.load(sys.stdin); assert m["issuer"] == sys.argv[1] and "S256" in m["code_challenge_methods_supported"]' "$issuer"
@@ -52,5 +60,10 @@ if [[ "$status" != 401 ]]; then
 fi
 
 # Only update the current release after readiness succeeds. Keep prior bundles for rollback.
+printf '%s\n' "$MCP_IMAGE" > "$release_dir/image.digest"
+previous=$(readlink -f "$deploy_root/deploy/current" 2>/dev/null || true)
+if [[ -n "$previous" && "$previous" != "$release_dir" ]]; then
+  ln -sfn "$previous" "$deploy_root/deploy/previous"
+fi
 ln -sfn "$release_dir" "$deploy_root/deploy/current"
-echo "MCP deployment ready: $release_image"
+echo "MCP deployment ready: $MCP_IMAGE"

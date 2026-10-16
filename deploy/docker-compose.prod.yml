@@ -32,7 +32,7 @@ services:
     security_opt: [no-new-privileges:true]
     stop_grace_period: 15s
   postgres:
-    image: postgres:17-alpine
+    image: ${MCP_POSTGRES_IMAGE:-postgres:17-alpine}
     restart: unless-stopped
     environment:
       POSTGRES_DB: mailmcp
@@ -49,6 +49,8 @@ services:
       timeout: 3s
       retries: 10
 networks:
+  default:
+    internal: true
   shared_proxy:
     external: true
     name: ${MCP_PROXY_NETWORK:-deployments_default}

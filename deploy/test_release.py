@@ -25,6 +25,7 @@ import os,sys,json
 args=sys.argv[1:]
 with open(os.environ["COMMAND_LOG"],"a") as f: f.write(json.dumps(args)+"\\n")
 if args[-1] == os.environ.get("FAIL_STAGE"): sys.exit(1)
+if args[:2] == ["image","inspect"]: print("ghcr.io/kenniele/imap_mcp@sha256:"+"b"*64)
 if "json" in args:
  print(json.dumps({"services":{"mail-mcp":{"ports":[{"published":"18080"}],"environment":{"MCP_PUBLIC_URL":"https://imap-mcp.example/mcp"}}}}))
 ''')
@@ -57,7 +58,8 @@ elif "%{http_code}" in sys.argv: print("401",end="")
         self.assertLess(check, migrate)
         self.assertLess(migrate, start)
         for command in commands:
-            self.assertIn("imap_mcp", command)
+            if command[0] == "compose":
+                self.assertIn("imap_mcp", command)
             self.assertFalse(set(command) & {"down", "--remove-orphans", "caddy", "fitlog-caddy"})
 
     def test_failed_preflight_or_migration_does_not_replace_app(self):
