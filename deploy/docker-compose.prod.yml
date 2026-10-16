@@ -1,5 +1,5 @@
 # Standalone production stack. Uses the existing imap_mcp project/data volume.
-# The shared Caddy belongs to FitLog and is managed independently.
+# HTTPS is supplied by the independent server-infra project.
 services:
   mail-mcp:
     image: ${MCP_IMAGE:?set MCP_IMAGE to an immutable GHCR image tag}
@@ -22,7 +22,7 @@ services:
       - "127.0.0.1:${MCP_HOST_PORT:-18080}:8080"
     networks:
       default: {}
-      shared_proxy:
+      edge:
         aliases: [imap-mcp-backend]
     depends_on:
       postgres:
@@ -51,8 +51,8 @@ services:
 networks:
   default:
     internal: true
-  shared_proxy:
+  edge:
     external: true
-    name: ${MCP_PROXY_NETWORK:-deployments_default}
+    name: ${MCP_PROXY_NETWORK:-edge-imap}
 volumes:
   postgres_data:

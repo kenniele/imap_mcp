@@ -108,7 +108,7 @@ jobs:
           : "${SSH_USER:?set DEPLOY_USER}"
           : "${SSH_KNOWN_HOSTS:?set DEPLOY_KNOWN_HOSTS to the verified server host key}"
           port="${SSH_PORT:-22}"
-          root="${DEPLOY_PATH:-/home/fitlog/imap_mcp}"
+          root="${DEPLOY_PATH:?set DEPLOY_PATH}"
           [[ "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] && [[ "$root" != / ]]
           [[ "$port" =~ ^[0-9]+$ ]] && [[ "$SSH_USER" =~ ^[a-zA-Z0-9_-]+$ ]]
           [[ "$SSH_HOST" =~ ^[a-zA-Z0-9.:-]+$ ]]

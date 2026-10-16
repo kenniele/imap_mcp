@@ -1,10 +1,11 @@
 # OAuth и деплой на VPS
 
-Production перенесён на сервер Pulse 16 октября 2026: `deploy@148.135.208.115`,
-каталог `/home/deploy/imap_mcp`, Compose `imap_mcp`, сеть `proxy`.
+Production перенесён на VPS 16 октября 2026: `deploy@148.135.208.115`,
+каталог `/home/deploy/imap_mcp`, Compose `imap_mcp`, сеть `edge-imap`.
 Домен остаётся `https://imap-mcp.chickenkiller.com/mcp`.
-Общий proxy — `pulse-proxy-caddy-1`, его конфигурация находится в
-`/home/deploy/pulse-proxy/Caddyfile`. БД PostgreSQL 17 не публикуется наружу.
+Proxy — самостоятельный проект `kenniele/server-infra`, контейнер
+`server-infra-caddy-1`; каталог `/home/deploy/server-infra`.
+Его конфигурация и deployment не зависят от приложений. БД PostgreSQL 17 не публикуется наружу.
 
 Release разрешает commit SHA в digest, сохраняет `deploy/current/image.digest`,
 проверяет локальный `/ready`, HTTPS через Caddy именно нового сервера и внешний
