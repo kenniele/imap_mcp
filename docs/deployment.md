@@ -271,3 +271,22 @@ bash /home/fitlog/imap_mcp/deploy/releases/<FULL_SHA>/release.sh \
 `--remove-orphans`, удаление volumes или глобальную чистку Docker.
 Успешные проверки деплоя подтверждают HTTP/OAuth discovery и связь с PostgreSQL;
 вход в реальном ChatGPT и IMAP-доступ к каждому ящику проверяются отдельно.
+
+## Ежедневные общие резервные копии
+
+С 2026-10-18 production включён в общий backup Pulse + FitLog + IMAP + server-infra.
+Таймер `server-backup.timer` пользователя deploy выполняется каждый день в
+**04:00 Europe/Moscow** независимо от SSH-сеанса. Архивы age:
+`/home/deploy/server-backups/archives`, хранение 14 дней; автоматическая загрузка
+на Mac каждый час в `~/Backups/server-services/archives`, хранение 30 дней.
+Mac забирает накопившиеся копии после включения/пробуждения, пока они есть на VPS.
+Включены custom dump БД, `.env`, текущий release, ключи приложений и Caddy state.
+Ключ расшифровки остаётся на Mac: `~/.ssh/server_backups.agekey`, не на VPS/Git.
+
+Состояние: `systemctl --user list-timers server-backup.timer` и
+`~/server-backups/last-success.json` / `last-error.json` на VPS;
+`~/Backups/server-services/last-success.json` / `last-error.json` на Mac.
+Первое восстановление всех трёх БД в отдельный PostgreSQL проверено 2026-10-18.
+Исходники, тесты и полная инструкция восстановления — `server-infra/backups/README.md`.
+Общий backup работает отдельно от релизов приложения; предыдущие разовые копии
+сохраняются. Архив IMAP содержит данные сервиса, а не содержимое почтовых ящиков.
