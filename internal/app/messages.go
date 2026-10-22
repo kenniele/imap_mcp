@@ -21,6 +21,9 @@ func (s *Service) Folders(ctx context.Context, account string) ([]domain.Folder,
 	return out, nil
 }
 func (s *Service) Get(ctx context.Context, account, folder string, uid, validity uint32, attachments bool) (domain.Content, error) {
+	if folder == "" {
+		folder = "INBOX"
+	}
 	if uid == 0 {
 		return domain.Content{}, errors.New("uid must be positive")
 	}

@@ -50,7 +50,7 @@ type SearchQuery struct {
 	Subject        string   `json:"subject,omitempty"`
 	After          string   `json:"after,omitempty" jsonschema:"Inclusive RFC3339 message Date lower bound"`
 	Before         string   `json:"before,omitempty" jsonschema:"Exclusive RFC3339 message Date upper bound"`
-	Folder         string   `json:"folder,omitempty"`
+	Folder         string   `json:"folder,omitempty" jsonschema:"Exact IMAP folder name; omit to search all selectable folders including nested folders"`
 	Seen           *bool    `json:"seen,omitempty"`
 	HasAttachments *bool    `json:"has_attachments,omitempty"`
 	Limit          int      `json:"limit,omitempty" jsonschema:"1 to 100; default 20"`
@@ -68,6 +68,7 @@ type Page struct {
 }
 type AccountError struct {
 	Account string `json:"account"`
+	Folder  string `json:"folder,omitempty"`
 	Error   string `json:"error"`
 }
 type SearchResult struct {

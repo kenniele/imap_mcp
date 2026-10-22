@@ -42,7 +42,8 @@ func Handler(service *app.Service, ready Readiness, token string, metrics *obser
 		}
 	}
 	mux.Handle("/mcp", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		// Leave room for the largest folder cursor plus JSON and search filters.
+		r.Body = http.MaxBytesReader(w, r.Body, app.MaxSearchCursorSize+64*1024)
 		transport.ServeHTTP(w, r)
 	})))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

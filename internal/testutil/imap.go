@@ -34,11 +34,21 @@ type Fixture struct {
 	InvalidRead atomic.Bool
 	Sessions    atomic.Int32
 	Delays      sync.Map
+	ListEntries []imaplib.ListData
 	stop        chan struct{}
 }
 type auditingSession struct {
 	imapserver.Session
 	fixture *Fixture
+}
+
+func (s *auditingSession) List(w *imapserver.ListWriter, ref string, patterns []string, o *imaplib.ListOptions) error {
+	for _, entry := range s.fixture.ListEntries {
+		if err := w.WriteList(&entry); err != nil {
+			return err
+		}
+	}
+	return s.Session.List(w, ref, patterns, o)
 }
 
 func (s *auditingSession) Select(folder string, o *imaplib.SelectOptions) (*imaplib.SelectData, error) {
@@ -137,8 +147,12 @@ func (f *Fixture) Account(t *testing.T, alias string, messages []string) (domain
 }
 func (f *Fixture) Append(t *testing.T, user *imapmemserver.User, raw string) {
 	t.Helper()
+	f.AppendFolder(t, user, "INBOX", raw)
+}
+func (f *Fixture) AppendFolder(t *testing.T, user *imapmemserver.User, folder, raw string) {
+	t.Helper()
 	b := []byte(raw)
-	if _, err := user.Append("INBOX", literal{bytes.NewReader(b), int64(len(b))}, &imaplib.AppendOptions{}); err != nil {
+	if _, err := user.Append(folder, literal{bytes.NewReader(b), int64(len(b))}, &imaplib.AppendOptions{}); err != nil {
 		t.Fatal(err)
 	}
 }

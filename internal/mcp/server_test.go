@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"mail-mcp/internal/domain"
 	"mail-mcp/internal/imap"
 	"mail-mcp/internal/observability"
+	"mail-mcp/internal/secrets"
 	"mail-mcp/internal/testutil"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -35,6 +37,75 @@ func (t authorizedTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+t.token)
 	return t.base.RoundTrip(r)
+}
+
+type manyFoldersProvider struct{ app.MailProvider }
+
+func (manyFoldersProvider) Folders(context.Context, domain.Account) ([]domain.Folder, error) {
+	folders := make([]domain.Folder, 400)
+	for i := range folders {
+		folders[i].Name = "Archive/" + strconv.Itoa(i) + "/" + strings.Repeat("я", 80)
+	}
+	return folders, nil
+}
+
+func (manyFoldersProvider) Search(_ context.Context, a domain.Account, q domain.SearchQuery, _ domain.Position) (domain.Page, error) {
+	return domain.Page{
+		Messages: []domain.Message{{Account: a.Alias, ID: a.ID + ":" + q.Folder + ":1", Folder: q.Folder, UID: 1, UIDValidity: 1}},
+		Start:    domain.Position{BeforeUID: 2, UIDValidity: 1},
+		Next:     domain.Position{BeforeUID: 1, UIDValidity: 1, Done: true},
+	}, nil
+}
+
+func TestLargeFolderCursorOverHTTP(t *testing.T) {
+	cipher, err := secrets.New(bytes.Repeat([]byte{42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := testStore{{ID: "one", Alias: "one", Enabled: true}}
+	service := app.New(accounts, manyFoldersProvider{}, cipher)
+	token := strings.Repeat("t", 32)
+	handler := Handler(service, accounts, token, observability.NewMetrics(), nil, nil)
+	cursor := ""
+	previousID := ""
+	for range 2 {
+		body, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": "mail_recent", "arguments": map[string]any{"limit": 1, "cursor": cursor}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("MCP-Protocol-Version", "2025-06-18")
+		req.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		var reply struct {
+			Error  json.RawMessage `json:"error"`
+			Result struct {
+				IsError bool                `json:"isError"`
+				Search  domain.SearchResult `json:"structuredContent"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &reply); err != nil {
+			t.Fatal(err)
+		}
+		result := reply.Result.Search
+		if response.Code != http.StatusOK || len(reply.Error) != 0 || reply.Result.IsError || len(result.Errors) != 0 || len(result.Messages) != 1 {
+			t.Fatalf("large cursor request failed: status=%d rpc_error=%s tool_error=%v", response.Code, reply.Error, reply.Result.IsError)
+		}
+		if result.Messages[0].ID == previousID {
+			t.Fatal("cursor repeated a message")
+		}
+		previousID = result.Messages[0].ID
+		cursor = result.NextCursor
+		if len(cursor) <= 64*1024 || len(cursor) > app.MaxSearchCursorSize {
+			t.Fatalf("expected a supported cursor exceeding the old HTTP limit, got %d bytes", len(cursor))
+		}
+	}
 }
 
 func TestDiscoveryWithoutSession(t *testing.T) {
@@ -154,7 +225,13 @@ func TestStreamableHTTPTools(t *testing.T) {
 	fixture := testutil.NewIMAP(t)
 	accounts := testStore{}
 	for _, alias := range []string{"personal", "university", "work"} {
-		a, _ := fixture.Account(t, alias, []string{testutil.Plain, testutil.HTML, testutil.Multipart})
+		a, user := fixture.Account(t, alias, []string{testutil.Plain, testutil.HTML, testutil.Multipart})
+		if alias == "university" {
+			if err := user.Create("Archive/Учёба", nil); err != nil {
+				t.Fatal(err)
+			}
+			fixture.AppendFolder(t, user, "Archive/Учёба", strings.Replace(testutil.Plain, "08:42:00", "11:42:00", 1))
+		}
 		accounts = append(accounts, a)
 	}
 	pool := imap.NewPool(fixture.Cipher, fixture.Roots)
@@ -213,6 +290,9 @@ func TestStreamableHTTPTools(t *testing.T) {
 			}
 			if tc.name == "mail_search" && !strings.Contains(string(b), "Добрый день") {
 				t.Fatal("missing search preview")
+			}
+			if (tc.name == "mail_recent" || tc.name == "mail_search") && !strings.Contains(string(b), "Archive/Учёба") {
+				t.Fatal("default tool search omitted a nested folder")
 			}
 			if tc.name == "mail_recent" && (strings.Contains(string(b), `"text"`) || strings.Contains(string(b), `"html"`)) {
 				t.Fatal("recent result includes bodies")

@@ -14,6 +14,9 @@ type ThreadResult struct {
 }
 
 func (s *Service) Thread(ctx context.Context, account, folder string, uid, validity uint32, limit int) (ThreadResult, error) {
+	if folder == "" {
+		folder = "INBOX"
+	}
 	out := ThreadResult{Messages: []domain.Content{}}
 	if uid == 0 {
 		return out, errors.New("uid must be positive")

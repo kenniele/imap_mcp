@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"mail-mcp/internal/domain"
@@ -73,9 +74,14 @@ func (p *Provider) Folders(ctx context.Context, a domain.Account) (out []domain.
 		return commandStep(ctx, "list_folders", func() error {
 			cmd := c.client.List("", "*", nil)
 			defer cmd.Close()
+			count := 0
 			for m := cmd.Next(); m != nil; m = cmd.Next() {
-				if len(out) >= 1000 {
+				count++
+				if count > 1000 {
 					return errors.New("too many IMAP folders")
+				}
+				if slices.Contains(m.Attrs, imaplib.MailboxAttrNoSelect) || slices.Contains(m.Attrs, imaplib.MailboxAttrNonExistent) {
+					continue
 				}
 				name := m.Mailbox
 				display := name

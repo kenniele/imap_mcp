@@ -36,10 +36,26 @@ func New(store AccountStore, mail MailProvider, cipher *secrets.Cipher) *Service
 }
 
 type cursorState struct {
-	Version   int                        `json:"v"`
-	Hash      string                     `json:"hash"`
-	Expires   int64                      `json:"expires"`
-	Positions map[string]domain.Position `json:"positions"`
+	Version   int                                   `json:"v"`
+	Hash      string                                `json:"hash"`
+	Expires   int64                                 `json:"expires"`
+	Positions map[string]map[string]domain.Position `json:"positions"`
+}
+
+// MaxSearchCursorSize bounds authenticated pagination tokens across all folders.
+const MaxSearchCursorSize = 1024 * 1024
+
+type folderPage struct {
+	folder string
+	page   domain.Page
+	err    error
+	index  int
+}
+
+type accountPages struct {
+	positions map[string]domain.Position
+	pages     []folderPage
+	err       error
 }
 
 func Normalize(q domain.SearchQuery) (domain.SearchQuery, error) {
@@ -48,9 +64,6 @@ func Normalize(q domain.SearchQuery) (domain.SearchQuery, error) {
 	}
 	if q.Limit < 1 || q.Limit > 100 {
 		return q, errors.New("limit must be between 1 and 100")
-	}
-	if q.Folder == "" {
-		q.Folder = "INBOX"
 	}
 	if len(q.Folder) > 512 || strings.ContainsAny(q.Folder, "\x00\r\n") {
 		return q, errors.New("invalid folder")
@@ -109,87 +122,146 @@ func (s *Service) Search(ctx context.Context, q domain.SearchQuery) (domain.Sear
 	}{q, q.Preview})
 	digest := sha256.Sum256(canonical)
 	hash := hex.EncodeToString(digest[:])
-	state := cursorState{Version: 1, Hash: hash, Expires: time.Now().Add(15 * time.Minute).Unix(), Positions: map[string]domain.Position{}}
+	state := cursorState{Version: 2, Hash: hash, Expires: time.Now().Add(15 * time.Minute).Unix(), Positions: map[string]map[string]domain.Position{}}
 	if token != "" {
-		if len(token) > 16384 {
+		if len(token) > MaxSearchCursorSize {
 			return out, errors.New("invalid cursor")
 		}
 		blob, e := base64.RawURLEncoding.DecodeString(token)
 		if e != nil {
 			return out, errors.New("invalid cursor")
 		}
-		plain, e := s.Cipher.Decrypt(blob, "mail-search-cursor-v1")
+		plain, e := s.Cipher.Decrypt(blob, "mail-search-cursor-v2")
 		if e != nil {
 			return out, errors.New("invalid cursor")
 		}
-		if json.Unmarshal(plain, &state) != nil || state.Version != 1 || state.Hash != hash || state.Expires <= time.Now().Unix() || state.Positions == nil {
+		if json.Unmarshal(plain, &state) != nil || state.Version != 2 || state.Hash != hash || state.Expires <= time.Now().Unix() || state.Positions == nil {
 			return out, errors.New("expired cursor or changed search filters/accounts")
 		}
 	}
-	pages := make([]domain.Page, len(accounts))
-	errs := make([]error, len(accounts))
+	results := make([]accountPages, len(accounts))
 	var group errgroup.Group
 	group.SetLimit(8)
 	for i, a := range accounts {
 		group.Go(func() error {
-			pos := state.Positions[a.ID]
-			if pos.Done {
-				return nil
-			}
 			accountCtx, stop := context.WithTimeout(ctx, s.AccountTimeout)
 			defer stop()
-			pages[i], errs[i] = s.Mail.Search(accountCtx, a, q, pos)
+			results[i] = s.searchAccount(accountCtx, a, q, state.Positions[a.ID])
 			return nil // An account failure must never cancel its siblings.
 		})
 	}
 	_ = group.Wait()
-	for i, a := range accounts {
-		if errs[i] != nil {
-			out.Errors = append(out.Errors, domain.AccountError{Account: a.Alias, Error: safeError(errs[i])})
-		}
+	type mailbox struct {
+		account domain.Account
+		*folderPage
 	}
-	indices := make([]int, len(accounts))
-	for len(out.Messages) < q.Limit {
-		best := -1
-		for i := range accounts {
-			if errs[i] != nil || indices[i] >= len(pages[i].Messages) {
+	mailboxes := []mailbox{}
+	for i, a := range accounts {
+		result := &results[i]
+		state.Positions[a.ID] = result.positions
+		if result.err != nil {
+			out.Errors = append(out.Errors, domain.AccountError{Account: a.Alias, Error: safeError(result.err)})
+		}
+		for j := range result.pages {
+			page := &result.pages[j]
+			if page.err != nil {
+				out.Errors = append(out.Errors, domain.AccountError{Account: a.Alias, Folder: page.folder, Error: safeError(page.err)})
 				continue
 			}
-			if best < 0 || pages[i].Messages[indices[i]].Date.After(pages[best].Messages[indices[best]].Date) {
+			mailboxes = append(mailboxes, mailbox{a, page})
+		}
+	}
+	for len(out.Messages) < q.Limit {
+		best := -1
+		for i, m := range mailboxes {
+			if m.index >= len(m.page.Messages) {
+				continue
+			}
+			if best < 0 || m.page.Messages[m.index].Date.After(mailboxes[best].page.Messages[mailboxes[best].index].Date) {
 				best = i
 			}
 		}
 		if best < 0 {
 			break
 		}
-		msg := pages[best].Messages[indices[best]]
-		indices[best]++
+		m := mailboxes[best]
+		msg := m.page.Messages[m.index]
+		m.index++
 		out.Messages = append(out.Messages, msg)
-		state.Positions[accounts[best].ID] = domain.Position{BeforeUID: msg.UID, UIDValidity: msg.UIDValidity}
+		state.Positions[m.account.ID][m.folder] = domain.Position{BeforeUID: msg.UID, UIDValidity: msg.UIDValidity}
+	}
+	for _, m := range mailboxes {
+		if m.index == len(m.page.Messages) {
+			state.Positions[m.account.ID][m.folder] = m.page.Next
+		} else if m.index == 0 {
+			state.Positions[m.account.ID][m.folder] = m.page.Start
+		}
 	}
 	more := false
-	for i, a := range accounts {
-		if errs[i] == nil && !state.Positions[a.ID].Done {
-			if indices[i] == len(pages[i].Messages) {
-				state.Positions[a.ID] = pages[i].Next
-			} else if indices[i] == 0 {
-				state.Positions[a.ID] = pages[i].Start
-			}
-		}
-		if !state.Positions[a.ID].Done {
+	for _, positions := range state.Positions {
+		if positions == nil { // Folder discovery failed; retry on the next page.
 			more = true
+		}
+		for _, pos := range positions {
+			more = more || !pos.Done
 		}
 	}
 	if more {
 		plain, _ := json.Marshal(state)
-		blob, e := s.Cipher.Encrypt(plain, "mail-search-cursor-v1")
+		blob, e := s.Cipher.Encrypt(plain, "mail-search-cursor-v2")
 		if e != nil {
 			return out, errors.New("cursor encoding failed")
 		}
 		out.NextCursor = base64.RawURLEncoding.EncodeToString(blob)
+		if len(out.NextCursor) > MaxSearchCursorSize {
+			return out, errors.New("too many folders for pagination; narrow accounts or specify folder")
+		}
 	}
 	return out, nil
 }
+
+func (s *Service) searchAccount(ctx context.Context, a domain.Account, q domain.SearchQuery, positions map[string]domain.Position) accountPages {
+	result := accountPages{positions: positions}
+	if positions == nil {
+		folders := []domain.Folder{{Name: q.Folder}}
+		if q.Folder == "" {
+			var err error
+			folders, err = s.Mail.Folders(ctx, a)
+			if err != nil {
+				result.err = err
+				return result
+			}
+		}
+		// Freeze folder membership along with each mailbox's UID boundary.
+		result.positions = make(map[string]domain.Position, len(folders))
+		for _, folder := range folders {
+			result.positions[folder.Name] = domain.Position{}
+		}
+	}
+	folders := make([]string, 0, len(result.positions))
+	for folder := range result.positions {
+		folders = append(folders, folder)
+	}
+	sort.Strings(folders)
+	for _, folder := range folders {
+		pos := result.positions[folder]
+		if pos.Done {
+			continue
+		}
+		if ctx.Err() != nil {
+			result.err = ctx.Err()
+			break
+		}
+		q.Folder = folder
+		page, err := s.Mail.Search(ctx, a, q, pos)
+		result.pages = append(result.pages, folderPage{folder: folder, page: page, err: err})
+		if err != nil && ctx.Err() != nil {
+			break // This folder's error already reports the expired account deadline.
+		}
+	}
+	return result
+}
+
 func safeError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return "imap connection timeout or request canceled"

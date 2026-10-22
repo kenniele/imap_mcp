@@ -27,20 +27,20 @@ type FoldersOutput struct {
 }
 type RecentInput struct {
 	Accounts []string `json:"accounts,omitempty"`
-	Folder   string   `json:"folder,omitempty"`
+	Folder   string   `json:"folder,omitempty" jsonschema:"Exact IMAP folder name; omit to search all selectable folders including nested folders"`
 	Limit    int      `json:"limit,omitempty"`
 	Cursor   string   `json:"cursor,omitempty"`
 }
 type GetInput struct {
 	Account            string `json:"account"`
-	Folder             string `json:"folder,omitempty"`
+	Folder             string `json:"folder,omitempty" jsonschema:"Folder from the search result; defaults to INBOX when omitted"`
 	UID                uint32 `json:"uid"`
 	UIDValidity        uint32 `json:"uid_validity,omitempty" jsonschema:"Use uid_validity from search results to reject a recreated mailbox"`
 	IncludeAttachments bool   `json:"include_attachments,omitempty" jsonschema:"Return attachment metadata only; binary data is never returned"`
 }
 type ThreadInput struct {
 	Account     string `json:"account"`
-	Folder      string `json:"folder,omitempty"`
+	Folder      string `json:"folder,omitempty" jsonschema:"Folder from the search result; defaults to INBOX when omitted"`
 	UID         uint32 `json:"uid"`
 	UIDValidity uint32 `json:"uid_validity,omitempty"`
 	Limit       int    `json:"limit,omitempty"`
@@ -106,15 +106,15 @@ func Register(server *sdk.Server, s *app.Service, metrics *observability.Metrics
 		a, e := s.Accounts(ctx)
 		return AccountsOutput{a}, len(a), e
 	})
-	add(server, metrics, logger, "mail_folders", "List account folders using a read-only IMAP connection.", func(ctx context.Context, in AccountInput) (FoldersOutput, int, error) {
+	add(server, metrics, logger, "mail_folders", "List selectable account folders, including nested folders, using a read-only IMAP connection.", func(ctx context.Context, in AccountInput) (FoldersOutput, int, error) {
 		f, e := s.Folders(ctx, in.Account)
 		return FoldersOutput{f}, len(f), e
 	})
-	add(server, metrics, logger, "mail_recent", "Get recent arrivals across enabled accounts. Per-account descending UID order; merge account heads by Date. No bodies or binary attachments. Follow next_cursor even if a page is empty.", func(ctx context.Context, in RecentInput) (domain.SearchResult, int, error) {
+	add(server, metrics, logger, "mail_recent", "Get recent arrivals across all selectable folders of enabled accounts by default, including nested folders. Specify folder to restrict to one folder. Per-folder descending UID order; merge mailbox heads by Date. No bodies or binary attachments. Follow next_cursor even if a page is empty.", func(ctx context.Context, in RecentInput) (domain.SearchResult, int, error) {
 		o, e := s.Search(ctx, domain.SearchQuery{Accounts: in.Accounts, Folder: in.Folder, Limit: in.Limit, Cursor: in.Cursor})
 		return o, len(o.Messages), e
 	})
-	add(server, metrics, logger, "mail_search", "Search headers and body using IMAP TEXT plus optional filters. RFC3339 dates filter message Date. Bounded UID windows, short previews but no full message bodies in results. Follow next_cursor; keep filters and limit unchanged. Per-account newest UID first, merged by head Date.", func(ctx context.Context, in domain.SearchQuery) (domain.SearchResult, int, error) {
+	add(server, metrics, logger, "mail_search", "Search all selectable folders of enabled accounts by default, including nested folders. Specify folder to restrict to one folder. Search headers and body using IMAP TEXT plus optional filters. RFC3339 dates filter message Date. Bounded UID windows, short previews but no full message bodies in results. Follow next_cursor; keep filters and limit unchanged. Per-folder newest UID first, merged by head Date. Pass each result's account, folder, uid and uid_validity to mail_get or mail_thread.", func(ctx context.Context, in domain.SearchQuery) (domain.SearchResult, int, error) {
 		in.Preview = true
 		o, e := s.Search(ctx, in)
 		return o, len(o.Messages), e
