@@ -309,6 +309,36 @@ func TestFolderUIDValidityChange(t *testing.T) {
 		t.Fatal("UIDVALIDITY error discarded another folder's results")
 	}
 }
+
+type folderTimeoutProvider struct{ app.MailProvider }
+
+func (p folderTimeoutProvider) Search(ctx context.Context, a domain.Account, q domain.SearchQuery, pos domain.Position) (domain.Page, error) {
+	if q.Folder == "INBOX" {
+		<-ctx.Done()
+		return domain.Page{}, ctx.Err()
+	}
+	return p.MailProvider.Search(ctx, a, q, pos)
+}
+
+func TestFolderTimeoutDoesNotStarveFollowingFolders(t *testing.T) {
+	f := testutil.NewIMAP(t)
+	a, user := f.Account(t, "one", nil)
+	f.AppendFolder(t, user, "Sent", testutil.Plain)
+	pool := imap.NewPool(f.Cipher, f.Roots)
+	t.Cleanup(pool.Close)
+	service := app.New(store{a}, folderTimeoutProvider{&imap.Provider{Pool: pool}}, f.Cipher)
+	service.AccountTimeout = 100 * time.Millisecond
+	q := domain.SearchQuery{Limit: 20}
+	first, err := service.Search(t.Context(), q)
+	if err != nil || len(first.Errors) != 1 || first.NextCursor == "" {
+		t.Fatalf("initial timeout=%+v, err=%v", first, err)
+	}
+	q.Cursor = first.NextCursor
+	second, err := service.Search(t.Context(), q)
+	if err != nil || len(second.Errors) != 1 || len(second.Messages) != 1 || second.Messages[0].Folder != "Sent" {
+		t.Fatalf("timed-out INBOX starved Sent: %+v, err=%v", second, err)
+	}
+}
 func TestThreadGrouping(t *testing.T) {
 	now := time.Now()
 	msgs := []domain.Content{{Message: domain.Message{MessageID: "<root>", Date: now}}, {Message: domain.Message{MessageID: "<child>", Date: now.Add(time.Hour)}, InReplyTo: []string{"<root>"}}, {Message: domain.Message{MessageID: "<grandchild>", Date: now.Add(2 * time.Hour)}, References: []string{"<child>"}}, {Message: domain.Message{MessageID: "<unrelated>", Subject: "Same subject"}}}

@@ -36,10 +36,11 @@ func New(store AccountStore, mail MailProvider, cipher *secrets.Cipher) *Service
 }
 
 type cursorState struct {
-	Version   int                                   `json:"v"`
-	Hash      string                                `json:"hash"`
-	Expires   int64                                 `json:"expires"`
-	Positions map[string]map[string]domain.Position `json:"positions"`
+	Version     int                                   `json:"v"`
+	Hash        string                                `json:"hash"`
+	Expires     int64                                 `json:"expires"`
+	Positions   map[string]map[string]domain.Position `json:"positions"`
+	NextFolders map[string]string                     `json:"next_folders,omitempty"`
 }
 
 // MaxSearchCursorSize bounds authenticated pagination tokens across all folders.
@@ -53,9 +54,10 @@ type folderPage struct {
 }
 
 type accountPages struct {
-	positions map[string]domain.Position
-	pages     []folderPage
-	err       error
+	positions  map[string]domain.Position
+	nextFolder string
+	pages      []folderPage
+	err        error
 }
 
 func Normalize(q domain.SearchQuery) (domain.SearchQuery, error) {
@@ -139,6 +141,9 @@ func (s *Service) Search(ctx context.Context, q domain.SearchQuery) (domain.Sear
 			return out, errors.New("expired cursor or changed search filters/accounts")
 		}
 	}
+	if state.NextFolders == nil {
+		state.NextFolders = map[string]string{}
+	}
 	results := make([]accountPages, len(accounts))
 	var group errgroup.Group
 	group.SetLimit(8)
@@ -146,7 +151,7 @@ func (s *Service) Search(ctx context.Context, q domain.SearchQuery) (domain.Sear
 		group.Go(func() error {
 			accountCtx, stop := context.WithTimeout(ctx, s.AccountTimeout)
 			defer stop()
-			results[i] = s.searchAccount(accountCtx, a, q, state.Positions[a.ID])
+			results[i] = s.searchAccount(accountCtx, a, q, state.Positions[a.ID], state.NextFolders[a.ID])
 			return nil // An account failure must never cancel its siblings.
 		})
 	}
@@ -159,6 +164,7 @@ func (s *Service) Search(ctx context.Context, q domain.SearchQuery) (domain.Sear
 	for i, a := range accounts {
 		result := &results[i]
 		state.Positions[a.ID] = result.positions
+		state.NextFolders[a.ID] = result.nextFolder
 		if result.err != nil {
 			out.Errors = append(out.Errors, domain.AccountError{Account: a.Alias, Error: safeError(result.err)})
 		}
@@ -220,8 +226,8 @@ func (s *Service) Search(ctx context.Context, q domain.SearchQuery) (domain.Sear
 	return out, nil
 }
 
-func (s *Service) searchAccount(ctx context.Context, a domain.Account, q domain.SearchQuery, positions map[string]domain.Position) accountPages {
-	result := accountPages{positions: positions}
+func (s *Service) searchAccount(ctx context.Context, a domain.Account, q domain.SearchQuery, positions map[string]domain.Position, nextFolder string) accountPages {
+	result := accountPages{positions: positions, nextFolder: nextFolder}
 	if positions == nil {
 		folders := []domain.Folder{{Name: q.Folder}}
 		if q.Folder == "" {
@@ -243,7 +249,10 @@ func (s *Service) searchAccount(ctx context.Context, a domain.Account, q domain.
 		folders = append(folders, folder)
 	}
 	sort.Strings(folders)
-	for _, folder := range folders {
+	start := sort.SearchStrings(folders, nextFolder)
+	for offset := range folders {
+		i := (start + offset) % len(folders)
+		folder := folders[i]
 		pos := result.positions[folder]
 		if pos.Done {
 			continue
@@ -253,6 +262,8 @@ func (s *Service) searchAccount(ctx context.Context, a domain.Account, q domain.
 			break
 		}
 		q.Folder = folder
+		// Resume after the last attempted mailbox so a slow folder cannot starve its siblings.
+		result.nextFolder = folders[(i+1)%len(folders)]
 		page, err := s.Mail.Search(ctx, a, q, pos)
 		result.pages = append(result.pages, folderPage{folder: folder, page: page, err: err})
 		if err != nil && ctx.Err() != nil {
