@@ -153,7 +153,27 @@ func (p *Pool) dial(ctx context.Context, a domain.Account) (*connection, error) 
 		c.close()
 		return nil, err
 	}
+	// Complete capability discovery before LOGIN: some providers stall when
+	// authentication is pipelined with the automatic greeting CAPABILITY.
+	if err = commandStep(ctx, "capability", func() error {
+		if c.client.Caps() == nil {
+			return errors.New("capability discovery failed")
+		}
+		return nil
+	}); err != nil {
+		c.close()
+		return nil, err
+	}
 	if err = commandStep(ctx, "login", func() error { return c.client.Login(a.Username, string(password)).Wait() }); err != nil {
+		c.close()
+		return nil, err
+	}
+	if err = commandStep(ctx, "authenticated_capability", func() error {
+		if c.client.Caps() == nil {
+			return errors.New("capability discovery failed")
+		}
+		return nil
+	}); err != nil {
 		c.close()
 		return nil, err
 	}

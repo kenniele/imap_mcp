@@ -137,10 +137,22 @@ func TestEmptyFilteredPageStillContinues(t *testing.T) {
 	if len(first.Messages) != 0 || first.NextCursor == "" {
 		t.Fatalf("expected empty continuing window: %+v", first)
 	}
-	q.Cursor = first.NextCursor
-	last, e := service.Search(context.Background(), q)
-	if e != nil || len(last.Messages) != 1 || last.Messages[0].UID != 1 || last.NextCursor != "" {
-		t.Fatalf("last=%+v err=%v", last, e)
+	last := first
+	for pages := 0; last.NextCursor != ""; pages++ {
+		if pages > imap.MaxScan+1 {
+			t.Fatal("filtered cursor did not terminate")
+		}
+		q.Cursor = last.NextCursor
+		last, e = service.Search(context.Background(), q)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(last.Messages) > 0 && last.NextCursor != "" {
+			t.Fatal("unexpected matching page")
+		}
+	}
+	if len(last.Messages) != 1 || last.Messages[0].UID != 1 {
+		t.Fatalf("last=%+v", last)
 	}
 }
 func TestThreadGrouping(t *testing.T) {

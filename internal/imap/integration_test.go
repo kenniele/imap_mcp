@@ -157,3 +157,46 @@ func TestLoginCancellation(t *testing.T) {
 		t.Fatal("SDK LOGIN exceeded request deadline")
 	}
 }
+
+// Large mailboxes must progress across bounded metadata batches without losing UIDs.
+func TestSearchBoundedMetadataPagination(t *testing.T) {
+	f := testutil.NewIMAP(t)
+	messages := make([]string, 45)
+	for i := range messages {
+		messages[i] = testutil.Plain
+	}
+	a, _ := f.Account(t, "large", messages)
+	pool := NewPool(f.Cipher, f.Roots)
+	t.Cleanup(pool.Close)
+	p := &Provider{Pool: pool}
+	q := domain.SearchQuery{Folder: "INBOX", Limit: 100}
+	seen := map[uint32]bool{}
+	pos := domain.Position{}
+	pages := 0
+	for !pos.Done {
+		page, err := p.Search(t.Context(), a, q, pos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Messages) > 20 {
+			t.Fatalf("metadata batch is unbounded: %d", len(page.Messages))
+		}
+		for _, m := range page.Messages {
+			if seen[m.UID] {
+				t.Fatalf("duplicate UID %d", m.UID)
+			}
+			seen[m.UID] = true
+		}
+		if page.Next.BeforeUID == pos.BeforeUID && !page.Next.Done {
+			t.Fatal("cursor did not advance")
+		}
+		pos = page.Next
+		pages++
+		if pages > 4 {
+			t.Fatal("pagination did not terminate")
+		}
+	}
+	if len(seen) != 45 || pages != 3 {
+		t.Fatalf("got %d UIDs across %d pages", len(seen), pages)
+	}
+}

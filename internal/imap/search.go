@@ -69,7 +69,12 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 			out.Next.Done = true
 			return nil
 		}
-		count := min(MaxScan, len(uids))
+		// Bound metadata work per cursor page; BODYSTRUCTURE can be slow on large mailboxes.
+		batchSize := 20
+		if a.Provider == "yandex" {
+			batchSize = 5
+		}
+		count := min(MaxScan, batchSize, q.Limit+1, len(uids))
 		candidates := uids[:count]
 		buffers, e := fetchMetadata(ctx, c, candidates)
 		if e != nil {
