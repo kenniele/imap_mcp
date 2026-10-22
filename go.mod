@@ -1,6 +1,6 @@
 module mail-mcp
 
-go 1.27.2
+go 1.27.3
 
 // Pinned beta.8 with a narrow Mail.ru BODYSTRUCTURE compatibility patch.
 replace github.com/emersion/go-imap/v2 => ./third_party/go-imap
