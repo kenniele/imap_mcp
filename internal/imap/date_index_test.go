@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"mail-mcp/internal/app"
 	"mail-mcp/internal/domain"
@@ -18,17 +17,17 @@ import (
 
 type memoryDates struct {
 	mu    sync.Mutex
-	dates map[domain.DateIndexKey]map[uint32]time.Time
+	dates map[domain.DateIndexKey]map[uint32]domain.IndexedDate
 	fail  bool
 }
 
-func (m *memoryDates) LoadDates(_ context.Context, key domain.DateIndexKey, uids []uint32) (map[uint32]time.Time, error) {
+func (m *memoryDates) LoadDates(_ context.Context, key domain.DateIndexKey, uids []uint32) (map[uint32]domain.IndexedDate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.fail {
 		return nil, errors.New("index unavailable")
 	}
-	out := map[uint32]time.Time{}
+	out := map[uint32]domain.IndexedDate{}
 	for _, uid := range uids {
 		if date, ok := m.dates[key][uid]; ok {
 			out[uid] = date
@@ -36,14 +35,14 @@ func (m *memoryDates) LoadDates(_ context.Context, key domain.DateIndexKey, uids
 	}
 	return out, nil
 }
-func (m *memoryDates) SaveDates(_ context.Context, key domain.DateIndexKey, dates map[uint32]time.Time) error {
+func (m *memoryDates) SaveDates(_ context.Context, key domain.DateIndexKey, dates map[uint32]domain.IndexedDate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.dates == nil {
-		m.dates = map[domain.DateIndexKey]map[uint32]time.Time{}
+		m.dates = map[domain.DateIndexKey]map[uint32]domain.IndexedDate{}
 	}
 	if m.dates[key] == nil {
-		m.dates[key] = map[uint32]time.Time{}
+		m.dates[key] = map[uint32]domain.IndexedDate{}
 	}
 	for uid, date := range dates {
 		m.dates[key][uid] = date
@@ -206,5 +205,31 @@ func TestDateIndexRetainsAllFolderCoverageAcrossQueries(t *testing.T) {
 	next, err := service.Search(t.Context(), query)
 	if err != nil || len(next.Errors) != 0 || next.NextCursor != "" || len(next.Messages) != 4 || f.DateReads.Load() != reads+1 {
 		t.Fatalf("new nested folder lost: %+v, %v", next, err)
+	}
+}
+
+func TestDateIndexWarnsAboutUnavailableBodiesAndRecovers(t *testing.T) {
+	f := testutil.NewIMAP(t)
+	a, _ := f.Account(t, "indexed", []string{testutil.Plain, testutil.Plain})
+	a.Provider = "yandex"
+	f.UnavailableBodies.Store(uint32(1), true)
+	pool := NewPool(f.Cipher, f.Roots)
+	t.Cleanup(pool.Close)
+	service := app.New(dateTestAccounts{a}, &Provider{Pool: pool, DateIndex: &memoryDates{}}, f.Cipher)
+	query := domain.SearchQuery{Limit: 100, After: "2026-09-30T00:00:00Z", Before: "2026-10-01T00:00:00Z"}
+	first, err := service.Search(t.Context(), query)
+	if err != nil || len(first.Errors) != 0 || len(first.Warnings) != 1 || first.NextCursor != "" || len(first.Messages) != 1 || first.Messages[0].UID != 2 {
+		t.Fatalf("unavailable UID lost or caused infinite retry: %+v, %v", first, err)
+	}
+	reads := f.DateReads.Load()
+	next, err := service.Search(t.Context(), query)
+	if err != nil || len(next.Errors) != 0 || len(next.Warnings) != 1 || next.NextCursor != "" || len(next.Messages) != 1 || f.DateReads.Load() != reads {
+		t.Fatalf("warm lookup retried unavailable headers: %+v, %v", next, err)
+	}
+	// A provider repair with unchanged UIDVALIDITY must be noticed next search.
+	f.UnavailableBodies.Delete(uint32(1))
+	repaired, err := service.Search(t.Context(), query)
+	if err != nil || len(repaired.Errors) != 0 || len(repaired.Warnings) != 0 || len(repaired.Messages) != 2 || repaired.NextCursor != "" {
+		t.Fatalf("repaired body stayed hidden: %+v, %v", repaired, err)
 	}
 }

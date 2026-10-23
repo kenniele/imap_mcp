@@ -81,9 +81,11 @@ func add[In, Out any](server *sdk.Server, metrics *observability.Metrics, logger
 		out, count, err := fn(ctx, in)
 		result := "ok"
 		accountErrorCount := 0
-		if search, ok := any(out).(domain.SearchResult); ok && len(search.Errors) > 0 {
+		warningCount := 0
+		if search, ok := any(out).(domain.SearchResult); ok && (len(search.Errors) > 0 || len(search.Warnings) > 0) {
 			result = "partial"
 			accountErrorCount = len(search.Errors)
+			warningCount = len(search.Warnings)
 		}
 		errorText := ""
 		if err != nil {
@@ -96,7 +98,7 @@ func add[In, Out any](server *sdk.Server, metrics *observability.Metrics, logger
 			metrics.MCPDuration.WithLabelValues(name).Observe(time.Since(start).Seconds())
 		}
 		if logger != nil {
-			logger.InfoContext(ctx, "mail tool completed", "request_id", observability.RequestID(ctx), "tool", name, "duration_ms", time.Since(start).Milliseconds(), "result", result, "result_count", count, "account_error_count", accountErrorCount, "error", errorText)
+			logger.InfoContext(ctx, "mail tool completed", "request_id", observability.RequestID(ctx), "tool", name, "duration_ms", time.Since(start).Milliseconds(), "result", result, "result_count", count, "account_error_count", accountErrorCount, "warning_count", warningCount, "error", errorText)
 		}
 		return nil, out, err
 	})
@@ -114,7 +116,7 @@ func Register(server *sdk.Server, s *app.Service, metrics *observability.Metrics
 		o, e := s.Search(ctx, domain.SearchQuery{Accounts: in.Accounts, Folder: in.Folder, Limit: in.Limit, Cursor: in.Cursor})
 		return o, len(o.Messages), e
 	})
-	add(server, metrics, logger, "mail_search", "Search all selectable folders of enabled accounts by default, including nested folders. Specify folder to restrict to one folder. Search headers and body using IMAP TEXT plus optional filters. RFC3339 dates filter message Date. Bounded UID windows, short previews but no full message bodies in results. Follow next_cursor; keep filters and limit unchanged. Per-folder newest UID first, merged by head Date. Pass each result's account, folder, uid and uid_validity to mail_get or mail_thread.", func(ctx context.Context, in domain.SearchQuery) (domain.SearchResult, int, error) {
+	add(server, metrics, logger, "mail_search", "Search all selectable folders of enabled accounts by default, including nested folders. Specify folder to restrict to one folder. Search headers and body using IMAP TEXT plus optional filters. RFC3339 dates filter message Date. Bounded UID windows, short previews but no full message bodies in results. Follow next_cursor; keep filters and limit unchanged. Check warnings for provider messages whose Date/body is unavailable; these warnings do not require restarting pagination. Per-folder newest UID first, merged by head Date. Pass each result's account, folder, uid and uid_validity to mail_get or mail_thread.", func(ctx context.Context, in domain.SearchQuery) (domain.SearchResult, int, error) {
 		in.Preview = true
 		o, e := s.Search(ctx, in)
 		return o, len(o.Messages), e

@@ -58,7 +58,7 @@ func TestPostgresEncryptedAccountLifecycle(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer store.Close()
-	if _, e = store.DB.Exec(ctx, migrations.AccountsSQL+"\n"+migrations.MailDatesSQL+"\n"+migrations.MailDatesSQL); e != nil {
+	if _, e = store.DB.Exec(ctx, migrations.AccountsSQL+"\n"+migrations.MailDatesSQL+"\n"+migrations.DateAvailabilitySQL+"\n"+migrations.DateAvailabilitySQL); e != nil {
 		t.Fatal(e)
 	}
 	cipher, _ := secrets.New(bytes.Repeat([]byte{42}, 32))
@@ -88,8 +88,23 @@ func TestPostgresEncryptedAccountLifecycle(t *testing.T) {
 	}
 	key := domain.DateIndexKey{AccountID: id, MailboxKey: "connection-one", Folder: "Учёба/Задания", UIDValidity: 4294967295}
 	date := time.Date(2026, 10, 23, 9, 0, 0, 0, time.FixedZone("MSK", 3*60*60))
-	if e = store.SaveDates(ctx, key, map[uint32]time.Time{4294967295: date}); e != nil {
+	if e = store.SaveDates(ctx, key, map[uint32]domain.IndexedDate{4294967295: {Date: date}}); e != nil {
 		t.Fatal(e)
+	}
+	if e = store.SaveDates(ctx, key, map[uint32]domain.IndexedDate{42: {Date: date, Unavailable: true}}); e != nil {
+		t.Fatal(e)
+	}
+	unavailable, e := store.LoadDates(ctx, key, []uint32{42})
+	if e != nil || !unavailable[42].Unavailable {
+		t.Fatal("unavailable state was not persisted")
+	}
+	repairedDate := date.Add(time.Hour)
+	if e = store.SaveDates(ctx, key, map[uint32]domain.IndexedDate{42: {Date: repairedDate}}); e != nil {
+		t.Fatal(e)
+	}
+	repaired, e := store.LoadDates(ctx, key, []uint32{42})
+	if e != nil || repaired[42].Unavailable || !repaired[42].Date.Equal(repairedDate) {
+		t.Fatal("repaired provider date did not replace unavailable state")
 	}
 	// Reopening the store models an application restart; no in-memory cache is shared.
 	restarted, e := Open(ctx, u.String())
@@ -98,7 +113,7 @@ func TestPostgresEncryptedAccountLifecycle(t *testing.T) {
 	}
 	dates, e := restarted.LoadDates(ctx, key, []uint32{1, 4294967295})
 	restarted.Close()
-	if e != nil || len(dates) != 1 || !dates[4294967295].Equal(date) {
+	if e != nil || len(dates) != 1 || !dates[4294967295].Date.Equal(date) {
 		t.Fatalf("date index did not persist: %v, %v", dates, e)
 	}
 	for _, changed := range []domain.DateIndexKey{

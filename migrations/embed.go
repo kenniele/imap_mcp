@@ -10,3 +10,6 @@ var OAuthSQL string
 
 //go:embed 003_mail_dates.sql
 var MailDatesSQL string
+
+//go:embed 004_date_availability.sql
+var DateAvailabilitySQL string

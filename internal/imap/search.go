@@ -92,7 +92,7 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 		candidates := uids[:count]
 		metadataUIDs := candidates
 		if localDates {
-			candidates, metadataUIDs, e = p.dateCandidates(ctx, c, a, q, selected.UIDValidity, uids, count)
+			candidates, metadataUIDs, out.UnavailableDates, e = p.dateCandidates(ctx, c, a, q, selected.UIDValidity, uids, count)
 			if e != nil {
 				return e
 			}

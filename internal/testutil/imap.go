@@ -26,18 +26,19 @@ import (
 )
 
 type Fixture struct {
-	Cipher          *secrets.Cipher
-	Roots           *x509.CertPool
-	Host            string
-	Port            int
-	Server          *imapmemserver.Server
-	InvalidRead     atomic.Bool
-	Sessions        atomic.Int32
-	DateReads       atomic.Int32
-	Delays          sync.Map
-	ListEntries     []imaplib.ListData
-	IgnoreSentDates bool
-	stop            chan struct{}
+	Cipher            *secrets.Cipher
+	Roots             *x509.CertPool
+	Host              string
+	Port              int
+	Server            *imapmemserver.Server
+	InvalidRead       atomic.Bool
+	Sessions          atomic.Int32
+	DateReads         atomic.Int32
+	UnavailableBodies sync.Map
+	Delays            sync.Map
+	ListEntries       []imaplib.ListData
+	IgnoreSentDates   bool
+	stop              chan struct{}
 }
 type auditingSession struct {
 	imapserver.Session
@@ -77,6 +78,20 @@ func (s *auditingSession) Fetch(w *imapserver.FetchWriter, n imaplib.NumSet, o *
 			if nums, ok := set.Nums(); ok {
 				s.fixture.DateReads.Add(int32(len(nums)))
 			}
+		}
+	}
+	if set, ok := n.(imaplib.UIDSet); ok && (o.Envelope || o.BodyStructure != nil || len(o.BodySection) > 0) {
+		if nums, ok := set.Nums(); ok {
+			var good []imaplib.UID
+			for _, uid := range nums {
+				if unavailable, _ := s.fixture.UnavailableBodies.Load(uint32(uid)); unavailable != true {
+					good = append(good, uid)
+				}
+			}
+			if len(good) == 0 {
+				return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeUnavailable, Text: "message body unavailable"}
+			}
+			n = imaplib.UIDSetNum(good...)
 		}
 	}
 	if _, ok := n.(imaplib.UIDSet); !ok {

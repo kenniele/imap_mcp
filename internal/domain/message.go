@@ -62,9 +62,10 @@ type Position struct {
 	Done        bool   `json:"done"`
 }
 type Page struct {
-	Messages []Message
-	Start    Position
-	Next     Position
+	Messages         []Message
+	Start            Position
+	Next             Position
+	UnavailableDates int
 }
 type AccountError struct {
 	Account string `json:"account"`
@@ -75,4 +76,5 @@ type SearchResult struct {
 	Messages   []Message      `json:"messages"`
 	Errors     []AccountError `json:"errors"`
 	NextCursor string         `json:"next_cursor,omitempty"`
+	Warnings   []AccountError `json:"warnings,omitempty"`
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -173,6 +174,9 @@ func (s *Service) Search(ctx context.Context, q domain.SearchQuery) (domain.Sear
 			if page.err != nil {
 				out.Errors = append(out.Errors, domain.AccountError{Account: a.Alias, Folder: page.folder, Error: safeError(page.err)})
 				continue
+			}
+			if page.page.UnavailableDates > 0 {
+				out.Warnings = append(out.Warnings, domain.AccountError{Account: a.Alias, Folder: page.folder, Error: fmt.Sprintf("Date unavailable for %d messages; message bodies are unavailable at the provider", page.page.UnavailableDates)})
 			}
 			mailboxes = append(mailboxes, mailbox{a, page})
 		}
