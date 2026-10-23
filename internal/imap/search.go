@@ -3,6 +3,7 @@ package imap
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/mail"
 	"sort"
 	"time"
@@ -145,24 +146,42 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 // fetchDates scans only bounded Date headers, avoiding expensive ENVELOPE and
 // BODYSTRUCTURE for thousands of messages excluded by the exact time window.
 func fetchDates(ctx context.Context, c *connection, uids []imaplib.UID) (map[uint32]time.Time, error) {
-	section := &imaplib.FetchItemBodySection{Specifier: imaplib.PartSpecifierHeader, HeaderFields: []string{"Date"}, Peek: true, Partial: &imaplib.SectionPartial{Size: 16 * 1024}}
-	buffers, err := step(ctx, "uid_fetch_dates", func() ([]*imapclient.FetchMessageBuffer, error) {
-		return c.client.Fetch(imaplib.UIDSetNum(uids...), &imaplib.FetchOptions{UID: true, InternalDate: true, BodySection: []*imaplib.FetchItemBodySection{section}}).Collect()
-	}, "requested_count", len(uids), "peek", true)
-	if err != nil {
-		return nil, err
-	}
-	dates := make(map[uint32]time.Time, len(buffers))
-	for _, buf := range buffers {
-		date := buf.InternalDate
-		if msg, err := mail.ReadMessage(bytes.NewReader(buf.FindBodySection(section))); err == nil {
-			if parsed, err := msg.Header.Date(); err == nil {
-				date = parsed
+	// Partial header requests are much slower on Yandex. Request only Date,
+	// stream responses, and cap retained header bytes on the client instead.
+	section := &imaplib.FetchItemBodySection{Specifier: imaplib.PartSpecifierHeader, HeaderFields: []string{"Date"}, Peek: true}
+	return step(ctx, "uid_fetch_dates", func() (map[uint32]time.Time, error) {
+		cmd := c.client.Fetch(imaplib.UIDSetNum(uids...), &imaplib.FetchOptions{UID: true, InternalDate: true, BodySection: []*imaplib.FetchItemBodySection{section}})
+		defer cmd.Close()
+		dates := make(map[uint32]time.Time, len(uids))
+		for msg := cmd.Next(); msg != nil; msg = cmd.Next() {
+			var uid uint32
+			var internal, date time.Time
+			for item := msg.Next(); item != nil; item = msg.Next() {
+				switch item := item.(type) {
+				case imapclient.FetchItemDataUID:
+					uid = uint32(item.UID)
+				case imapclient.FetchItemDataInternalDate:
+					internal = item.Time
+				case imapclient.FetchItemDataBodySection:
+					if item.Literal == nil || !item.MatchCommand(section) {
+						continue
+					}
+					raw, err := io.ReadAll(io.LimitReader(item.Literal, 16*1024))
+					if err != nil {
+						return nil, err
+					}
+					if header, err := mail.ReadMessage(bytes.NewReader(raw)); err == nil {
+						date, _ = header.Header.Date()
+					}
+				}
 			}
+			if date.IsZero() {
+				date = internal
+			}
+			dates[uid] = date
 		}
-		dates[uint32(buf.UID)] = date
-	}
-	return dates, nil
+		return dates, cmd.Close()
+	}, "requested_count", len(uids), "peek", true)
 }
 
 func matchesDate(date time.Time, q domain.SearchQuery) bool {
