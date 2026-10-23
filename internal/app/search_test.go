@@ -62,17 +62,24 @@ func TestMultiAccountPaginationAndPartialFailure(t *testing.T) {
 	timed := a
 	timed.ID = "timeout"
 	timed.Alias = "timeout"
+	timed.Secret, _ = f.Cipher.Encrypt([]byte("app-password"), "account:timeout")
 	pool := imap.NewPool(f.Cipher, f.Roots)
 	defer pool.Close()
 	provider := &imap.Provider{Pool: pool}
 	service := app.New(store{a, b, bad, timed}, timeoutProvider{provider}, f.Cipher)
-	service.AccountTimeout = 50 * time.Millisecond
+	// TLS setup under -race on shared CI runners can exceed 50 ms.
+	service.AccountTimeout = time.Second
 	result, e := service.Search(context.Background(), domain.SearchQuery{Limit: 3})
 	if e != nil {
 		t.Fatal(e)
 	}
 	if len(result.Messages) != 3 || len(result.Errors) != 2 {
 		t.Fatalf("results=%+v", result)
+	}
+	for _, failure := range result.Errors {
+		if failure.Account == "timeout" && failure.Error != "imap connection timeout or request canceled" {
+			t.Fatalf("timeout scenario failed before its deadline: %+v", failure)
+		}
 	}
 	// Test stable pagination without failing accounts, including an arrival between pages.
 	service = app.New(store{a, b}, provider, f.Cipher)

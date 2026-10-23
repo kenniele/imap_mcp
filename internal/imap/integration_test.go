@@ -226,7 +226,7 @@ func TestYandexDateSearchIgnoresServerSentFilters(t *testing.T) {
 	seen := map[uint32]bool{}
 	pos := domain.Position{}
 	for pages := 0; !pos.Done; pages++ {
-		if pages >= 8 {
+		if pages >= 16 {
 			t.Fatal("date pagination is scanning old BODYSTRUCTURE batches instead of dates")
 		}
 		page, err := p.Search(t.Context(), a, q, pos)

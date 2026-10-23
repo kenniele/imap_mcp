@@ -16,6 +16,9 @@ import (
 
 const MaxScan = 200
 
+// Keep cold Yandex header reads below the per-account deadline.
+const maxDateScan = 50
+
 func SearchCriteria(q domain.SearchQuery) *imaplib.SearchCriteria {
 	c := &imaplib.SearchCriteria{}
 	for _, h := range []struct{ key, value string }{{"From", q.From}, {"To", q.To}, {"Subject", q.Subject}} {
@@ -89,7 +92,7 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 		candidates := uids[:count]
 		metadataUIDs := candidates
 		if localDates {
-			candidates = uids[:min(MaxScan, len(uids))]
+			candidates = uids[:min(maxDateScan, len(uids))]
 			dates, err := fetchDates(ctx, c, candidates)
 			if err != nil {
 				return err
