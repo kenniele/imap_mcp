@@ -63,11 +63,11 @@ func run() error {
 		}
 		migrationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		_, err := store.DB.Exec(migrationCtx, migrations.AccountsSQL+"\n"+migrations.OAuthSQL)
+		_, err := store.DB.Exec(migrationCtx, migrations.AccountsSQL+"\n"+migrations.OAuthSQL+"\n"+migrations.MailDatesSQL)
 		if err != nil {
 			return errors.New("database migration failed")
 		}
-		fmt.Fprintln(os.Stdout, "Account and OAuth schemas ready")
+		fmt.Fprintln(os.Stdout, "Account, OAuth and date index schemas ready")
 		return nil
 	}
 	cipher, err := secrets.New(cfg.Key)
@@ -77,7 +77,7 @@ func run() error {
 	pool := imap.NewPool(cipher, nil)
 	defer pool.Close()
 	metrics := observability.NewMetrics()
-	provider := &imap.Provider{Pool: pool, Metrics: metrics}
+	provider := &imap.Provider{Pool: pool, Metrics: metrics, DateIndex: store}
 	if !serve {
 		return cli.Run(ctx, args[1:], store, provider, cipher)
 	}
@@ -86,6 +86,12 @@ func run() error {
 	cancel()
 	if err != nil {
 		return errors.New("account schema unavailable; run mail-mcp migrate")
+	}
+	startup, cancel = context.WithTimeout(ctx, 5*time.Second)
+	_, err = store.DB.Exec(startup, "SELECT 1 FROM mail_message_dates LIMIT 0")
+	cancel()
+	if err != nil {
+		return errors.New("mail date index schema unavailable; run mail-mcp migrate")
 	}
 	var security mailmcp.Security
 	if cfg.AuthMode == "oidc" {

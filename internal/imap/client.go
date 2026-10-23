@@ -15,8 +15,9 @@ import (
 )
 
 type Provider struct {
-	Pool    *Pool
-	Metrics *observability.Metrics
+	Pool      *Pool
+	Metrics   *observability.Metrics
+	DateIndex DateIndex
 }
 
 func (p *Provider) with(ctx context.Context, a domain.Account, op string, fn func(context.Context, *connection) error) (err error) {

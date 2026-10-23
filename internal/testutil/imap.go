@@ -33,6 +33,7 @@ type Fixture struct {
 	Server          *imapmemserver.Server
 	InvalidRead     atomic.Bool
 	Sessions        atomic.Int32
+	DateReads       atomic.Int32
 	Delays          sync.Map
 	ListEntries     []imaplib.ListData
 	IgnoreSentDates bool
@@ -71,6 +72,13 @@ func (s *auditingSession) Search(kind imapserver.NumKind, c *imaplib.SearchCrite
 	return s.Session.Search(kind, c, o)
 }
 func (s *auditingSession) Fetch(w *imapserver.FetchWriter, n imaplib.NumSet, o *imaplib.FetchOptions) error {
+	if len(o.BodySection) == 1 && len(o.BodySection[0].HeaderFields) == 1 && o.BodySection[0].HeaderFields[0] == "Date" {
+		if set, ok := n.(imaplib.UIDSet); ok {
+			if nums, ok := set.Nums(); ok {
+				s.fixture.DateReads.Add(int32(len(nums)))
+			}
+		}
+	}
 	if _, ok := n.(imaplib.UIDSet); !ok {
 		s.fixture.InvalidRead.Store(true)
 	}

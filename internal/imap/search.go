@@ -92,21 +92,9 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 		candidates := uids[:count]
 		metadataUIDs := candidates
 		if localDates {
-			candidates = uids[:min(maxDateScan, len(uids))]
-			dates, err := fetchDates(ctx, c, candidates)
-			if err != nil {
-				return err
-			}
-			metadataUIDs = nil
-			for i, uid := range candidates {
-				date, ok := dates[uint32(uid)]
-				if ok && matchesDate(date, q) {
-					metadataUIDs = append(metadataUIDs, uid)
-					if len(metadataUIDs) == count {
-						candidates = candidates[:i+1]
-						break
-					}
-				}
+			candidates, metadataUIDs, e = p.dateCandidates(ctx, c, a, q, selected.UIDValidity, uids, count)
+			if e != nil {
+				return e
 			}
 		}
 		buffers, e := fetchMetadata(ctx, c, metadataUIDs)

@@ -58,7 +58,7 @@ func TestPostgresEncryptedAccountLifecycle(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer store.Close()
-	if _, e = store.DB.Exec(ctx, migrations.AccountsSQL); e != nil {
+	if _, e = store.DB.Exec(ctx, migrations.AccountsSQL+"\n"+migrations.MailDatesSQL+"\n"+migrations.MailDatesSQL); e != nil {
 		t.Fatal(e)
 	}
 	cipher, _ := secrets.New(bytes.Repeat([]byte{42}, 32))
@@ -86,6 +86,36 @@ func TestPostgresEncryptedAccountLifecycle(t *testing.T) {
 	if e != nil || string(plain) != "test application password" {
 		t.Fatal("stored encrypted credential does not decrypt")
 	}
+	key := domain.DateIndexKey{AccountID: id, MailboxKey: "connection-one", Folder: "Учёба/Задания", UIDValidity: 4294967295}
+	date := time.Date(2026, 10, 23, 9, 0, 0, 0, time.FixedZone("MSK", 3*60*60))
+	if e = store.SaveDates(ctx, key, map[uint32]time.Time{4294967295: date}); e != nil {
+		t.Fatal(e)
+	}
+	// Reopening the store models an application restart; no in-memory cache is shared.
+	restarted, e := Open(ctx, u.String())
+	if e != nil {
+		t.Fatal(e)
+	}
+	dates, e := restarted.LoadDates(ctx, key, []uint32{1, 4294967295})
+	restarted.Close()
+	if e != nil || len(dates) != 1 || !dates[4294967295].Equal(date) {
+		t.Fatalf("date index did not persist: %v, %v", dates, e)
+	}
+	for _, changed := range []domain.DateIndexKey{
+		{AccountID: id, MailboxKey: key.MailboxKey, Folder: key.Folder, UIDValidity: 1},
+		{AccountID: id, MailboxKey: key.MailboxKey, Folder: "INBOX", UIDValidity: key.UIDValidity},
+		{AccountID: id, MailboxKey: "connection-two", Folder: key.Folder, UIDValidity: key.UIDValidity},
+		{AccountID: "00000000-0000-4000-8000-000000000002", MailboxKey: key.MailboxKey, Folder: key.Folder, UIDValidity: key.UIDValidity},
+	} {
+		dates, e := store.LoadDates(ctx, changed, []uint32{4294967295})
+		if e != nil || len(dates) != 0 {
+			t.Fatal("date index leaked across mailbox identity")
+		}
+	}
+	// Only live UIDs are looked up; an externally deleted UID is excluded.
+	if dates, e := store.LoadDates(ctx, key, []uint32{1}); e != nil || len(dates) != 0 {
+		t.Fatal("date index ignored live UID membership")
+	}
 	if e = store.Disable(ctx, "university"); e != nil {
 		t.Fatal(e)
 	}
@@ -95,6 +125,10 @@ func TestPostgresEncryptedAccountLifecycle(t *testing.T) {
 	}
 	if e = store.Delete(ctx, "university"); e != nil {
 		t.Fatal(e)
+	}
+	var cached int
+	if e := store.DB.QueryRow(ctx, "SELECT count(*) FROM mail_message_dates").Scan(&cached); e != nil || cached != 0 {
+		t.Fatal("account deletion retained cached dates")
 	}
 	accounts, e = store.List(ctx)
 	if e != nil || len(accounts) != 0 {
