@@ -15,6 +15,7 @@ type DateIndexKey struct {
 // For unreadable entries Date is INTERNALDATE and is never used to hide the
 // missing Date: searches return an explicit warning and recheck ENVELOPE.
 type IndexedDate struct {
-	Date        time.Time
-	Unavailable bool
+	Date         time.Time
+	Unavailable  bool
+	RecheckAfter time.Time
 }

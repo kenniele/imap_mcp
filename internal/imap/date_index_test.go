@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"mail-mcp/internal/app"
 	"mail-mcp/internal/domain"
@@ -215,7 +216,8 @@ func TestDateIndexWarnsAboutUnavailableBodiesAndRecovers(t *testing.T) {
 	f.UnavailableBodies.Store(uint32(1), true)
 	pool := NewPool(f.Cipher, f.Roots)
 	t.Cleanup(pool.Close)
-	service := app.New(dateTestAccounts{a}, &Provider{Pool: pool, DateIndex: &memoryDates{}}, f.Cipher)
+	index := &memoryDates{}
+	service := app.New(dateTestAccounts{a}, &Provider{Pool: pool, DateIndex: index}, f.Cipher)
 	query := domain.SearchQuery{Limit: 100, After: "2026-09-30T00:00:00Z", Before: "2026-10-01T00:00:00Z"}
 	first, err := service.Search(t.Context(), query)
 	if err != nil || len(first.Errors) != 0 || len(first.Warnings) != 1 || first.NextCursor != "" || len(first.Messages) != 1 || first.Messages[0].UID != 2 {
@@ -226,10 +228,85 @@ func TestDateIndexWarnsAboutUnavailableBodiesAndRecovers(t *testing.T) {
 	if err != nil || len(next.Errors) != 0 || len(next.Warnings) != 1 || next.NextCursor != "" || len(next.Messages) != 1 || f.DateReads.Load() != reads {
 		t.Fatalf("warm lookup retried unavailable headers: %+v, %v", next, err)
 	}
-	// A provider repair with unchanged UIDVALIDITY must be noticed next search.
+	// Expired negative status must notice a repair with unchanged UIDVALIDITY.
 	f.UnavailableBodies.Delete(uint32(1))
+	for _, folder := range index.dates {
+		for uid, record := range folder {
+			record.RecheckAfter = time.Time{}
+			folder[uid] = record
+		}
+	}
 	repaired, err := service.Search(t.Context(), query)
 	if err != nil || len(repaired.Errors) != 0 || len(repaired.Warnings) != 0 || len(repaired.Messages) != 2 || repaired.NextCursor != "" {
 		t.Fatalf("repaired body stayed hidden: %+v, %v", repaired, err)
+	}
+}
+
+func TestUnavailableRechecksStayBoundedAndTerminate(t *testing.T) {
+	f := testutil.NewIMAP(t)
+	raws := make([]string, 13)
+	for i := range raws {
+		raws[i] = testutil.Plain
+	}
+	a, _ := f.Account(t, "indexed", raws)
+	a.Provider = "yandex"
+	for uid := uint32(1); uid <= 12; uid++ {
+		f.UnavailableBodies.Store(uid, true)
+	}
+	pool := NewPool(f.Cipher, f.Roots)
+	t.Cleanup(pool.Close)
+	index := &memoryDates{}
+	service := app.New(dateTestAccounts{a}, &Provider{Pool: pool, DateIndex: index}, f.Cipher)
+	query := domain.SearchQuery{Limit: 100, After: "2026-09-30T00:00:00Z", Before: "2026-10-01T00:00:00Z"}
+	collect := func() int {
+		t.Helper()
+		q := query
+		seen := map[uint32]bool{}
+		for pages := 1; pages <= 10; pages++ {
+			result, err := service.Search(t.Context(), q)
+			if err != nil || len(result.Errors) != 0 {
+				t.Fatalf("failed bounded recheck: %+v, %v", result, err)
+			}
+			for _, message := range result.Messages {
+				if seen[message.UID] {
+					t.Fatal("repeated UID")
+				}
+				seen[message.UID] = true
+			}
+			if result.NextCursor == "" {
+				if len(seen) != 1 || !seen[13] {
+					t.Fatalf("available messages lost: %v", seen)
+				}
+				return pages
+			}
+			q.Cursor = result.NextCursor
+		}
+		t.Fatal("rechecks held cursor open")
+		return 0
+	}
+	collect()
+	reads := f.DateReads.Load()
+	if pages := collect(); pages != 1 {
+		t.Fatalf("fresh unavailable cache took %d pages", pages)
+	}
+	if f.DateReads.Load() != reads {
+		t.Fatal("fresh negative cache reread headers")
+	}
+	for _, folder := range index.dates {
+		for uid, record := range folder {
+			record.RecheckAfter = time.Time{}
+			folder[uid] = record
+		}
+	}
+	before := f.EnvelopeReads.Load()
+	f.MaxEnvelopeBatch.Store(0)
+	if pages := collect(); pages != 3 {
+		t.Fatalf("12 unavailable UIDs expected three bounded pages, got %d", pages)
+	}
+	if f.MaxEnvelopeBatch.Load() > maxUnavailableChecks || f.EnvelopeReads.Load()-before != 12 {
+		t.Fatal("availability checks were unbounded or repeated")
+	}
+	if f.DateReads.Load() != reads {
+		t.Fatal("recheck fetched historical Date headers")
 	}
 }

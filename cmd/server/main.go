@@ -63,7 +63,7 @@ func run() error {
 		}
 		migrationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		_, err := store.DB.Exec(migrationCtx, migrations.AccountsSQL+"\n"+migrations.OAuthSQL+"\n"+migrations.MailDatesSQL+"\n"+migrations.DateAvailabilitySQL)
+		_, err := store.DB.Exec(migrationCtx, migrations.AccountsSQL+"\n"+migrations.OAuthSQL+"\n"+migrations.MailDatesSQL+"\n"+migrations.DateAvailabilitySQL+"\n"+migrations.DateRechecksSQL)
 		if err != nil {
 			return errors.New("database migration failed")
 		}
@@ -88,7 +88,7 @@ func run() error {
 		return errors.New("account schema unavailable; run mail-mcp migrate")
 	}
 	startup, cancel = context.WithTimeout(ctx, 5*time.Second)
-	_, err = store.DB.Exec(startup, "SELECT unavailable FROM mail_message_dates LIMIT 0")
+	_, err = store.DB.Exec(startup, "SELECT unavailable,recheck_after FROM mail_message_dates LIMIT 0")
 	cancel()
 	if err != nil {
 		return errors.New("mail date index schema unavailable; run mail-mcp migrate")

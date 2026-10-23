@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"log/slog"
+	"sort"
+	"time"
 
 	"mail-mcp/internal/domain"
 
@@ -33,6 +35,7 @@ func (p *Provider) dateCandidates(ctx context.Context, c *connection, a domain.A
 		}
 	}
 	cachedCount := len(dates)
+	now := time.Now()
 	var low, high uint32
 	var retry []imaplib.UID
 	for uid, record := range dates {
@@ -42,11 +45,13 @@ func (p *Provider) dateCandidates(ctx context.Context, c *connection, a domain.A
 		if uid > high {
 			high = uid
 		}
-		if record.Unavailable {
+		if record.Unavailable && !record.RecheckAfter.After(now) {
 			retry = append(retry, imaplib.UID(uid))
 		}
 	}
 	updates := map[uint32]domain.IndexedDate{}
+	sort.Slice(retry, func(i, j int) bool { return retry[i] > retry[j] })
+	retry = retry[:min(len(retry), maxUnavailableChecks)]
 	if len(retry) > 0 {
 		restored, err := fetchEnvelopeDates(ctx, c, retry, dates)
 		if err != nil {
@@ -55,7 +60,7 @@ func (p *Provider) dateCandidates(ctx context.Context, c *connection, a domain.A
 		for uid, record := range restored {
 			previous := dates[uid]
 			dates[uid] = record
-			if previous.Unavailable != record.Unavailable || !previous.Date.Equal(record.Date) {
+			if previous.Unavailable != record.Unavailable || !previous.Date.Equal(record.Date) || !previous.RecheckAfter.Equal(record.RecheckAfter) {
 				updates[uid] = record
 			}
 		}
@@ -87,6 +92,7 @@ func (p *Provider) dateCandidates(ctx context.Context, c *connection, a domain.A
 			}
 		}
 	}
+	gaps = gaps[:min(len(gaps), maxUnavailableChecks-len(retry))]
 	if len(gaps) > 0 {
 		fetched, err := fetchEnvelopeDates(ctx, c, gaps, dates)
 		if err != nil {
@@ -106,7 +112,7 @@ func (p *Provider) dateCandidates(ctx context.Context, c *connection, a domain.A
 	}
 	// Absent from both FETCH and INTERNALDATE means expunged during this search.
 	// Unlike an unavailable body this absence must not be persisted.
-	for _, uid := range missing {
+	for _, uid := range gaps {
 		if _, ok := dates[uint32(uid)]; !ok {
 			dates[uint32(uid)] = domain.IndexedDate{}
 		}
@@ -122,7 +128,7 @@ func (p *Provider) dateCandidates(ctx context.Context, c *connection, a domain.A
 	scanned := 0
 	for _, uid := range uids {
 		record, known := dates[uint32(uid)]
-		if !known {
+		if !known || (record.Unavailable && !record.RecheckAfter.After(now)) {
 			break
 		}
 		scanned++

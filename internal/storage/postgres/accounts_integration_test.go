@@ -58,7 +58,7 @@ func TestPostgresEncryptedAccountLifecycle(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer store.Close()
-	if _, e = store.DB.Exec(ctx, migrations.AccountsSQL+"\n"+migrations.MailDatesSQL+"\n"+migrations.DateAvailabilitySQL+"\n"+migrations.DateAvailabilitySQL); e != nil {
+	if _, e = store.DB.Exec(ctx, migrations.AccountsSQL+"\n"+migrations.MailDatesSQL+"\n"+migrations.DateAvailabilitySQL+"\n"+migrations.DateRechecksSQL+"\n"+migrations.DateRechecksSQL); e != nil {
 		t.Fatal(e)
 	}
 	cipher, _ := secrets.New(bytes.Repeat([]byte{42}, 32))

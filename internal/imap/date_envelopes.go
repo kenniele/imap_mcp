@@ -3,12 +3,16 @@ package imap
 import (
 	"context"
 	"errors"
+	"time"
 
 	"mail-mcp/internal/domain"
 
 	imaplib "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 )
+
+const unavailableRecheckDelay = 15 * time.Minute
+const maxUnavailableChecks = 5
 
 func isUnavailable(err error) bool {
 	response, ok := errors.AsType[*imaplib.Error](err)
@@ -41,6 +45,7 @@ func fetchEnvelopeDates(ctx context.Context, c *connection, uids []imaplib.UID, 
 			continue
 		}
 		if record, ok := known[uint32(uid)]; ok && record.Unavailable {
+			record.RecheckAfter = time.Now().Add(unavailableRecheckDelay)
 			out[uint32(uid)] = record
 		} else {
 			missing = append(missing, uid)
@@ -54,7 +59,7 @@ func fetchEnvelopeDates(ctx context.Context, c *connection, uids []imaplib.UID, 
 			return nil, err
 		}
 		for _, buf := range buffers {
-			out[uint32(buf.UID)] = domain.IndexedDate{Date: buf.InternalDate, Unavailable: true}
+			out[uint32(buf.UID)] = domain.IndexedDate{Date: buf.InternalDate, Unavailable: true, RecheckAfter: time.Now().Add(unavailableRecheckDelay)}
 		}
 	}
 	return out, nil

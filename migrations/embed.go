@@ -13,3 +13,6 @@ var MailDatesSQL string
 
 //go:embed 004_date_availability.sql
 var DateAvailabilitySQL string
+
+//go:embed 005_date_rechecks.sql
+var DateRechecksSQL string

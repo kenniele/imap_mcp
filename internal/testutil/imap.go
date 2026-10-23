@@ -34,6 +34,8 @@ type Fixture struct {
 	InvalidRead       atomic.Bool
 	Sessions          atomic.Int32
 	DateReads         atomic.Int32
+	EnvelopeReads     atomic.Int32
+	MaxEnvelopeBatch  atomic.Int32
 	UnavailableBodies sync.Map
 	Delays            sync.Map
 	ListEntries       []imaplib.ListData
@@ -73,6 +75,17 @@ func (s *auditingSession) Search(kind imapserver.NumKind, c *imaplib.SearchCrite
 	return s.Session.Search(kind, c, o)
 }
 func (s *auditingSession) Fetch(w *imapserver.FetchWriter, n imaplib.NumSet, o *imaplib.FetchOptions) error {
+	if set, ok := n.(imaplib.UIDSet); ok && o.Envelope && o.BodyStructure == nil && len(o.BodySection) == 0 {
+		if nums, ok := set.Nums(); ok {
+			count := int32(len(nums))
+			s.fixture.EnvelopeReads.Add(count)
+			for old := s.fixture.MaxEnvelopeBatch.Load(); count > old; old = s.fixture.MaxEnvelopeBatch.Load() {
+				if s.fixture.MaxEnvelopeBatch.CompareAndSwap(old, count) {
+					break
+				}
+			}
+		}
+	}
 	if len(o.BodySection) == 1 && len(o.BodySection[0].HeaderFields) == 1 && o.BodySection[0].HeaderFields[0] == "Date" {
 		if set, ok := n.(imaplib.UIDSet); ok {
 			if nums, ok := set.Nums(); ok {

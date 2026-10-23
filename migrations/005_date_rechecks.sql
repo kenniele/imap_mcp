@@ -1,0 +1,1 @@
+ALTER TABLE mail_message_dates ADD COLUMN IF NOT EXISTS recheck_after TIMESTAMPTZ NOT NULL DEFAULT 'epoch';
