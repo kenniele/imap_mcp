@@ -23,6 +23,23 @@ func isUnavailable(err error) bool {
 // unavailable. INTERNALDATE is still readable. Keep that state explicit and
 // recheck ENVELOPE on later searches so repaired messages reappear immediately.
 func fetchEnvelopeDates(ctx context.Context, c *connection, uids []imaplib.UID, known map[uint32]domain.IndexedDate) (map[uint32]domain.IndexedDate, error) {
+	out := map[uint32]domain.IndexedDate{}
+	// A failed multi-UID FETCH can abort before returning otherwise readable
+	// messages. Check these bounded recovery candidates individually.
+	for _, uid := range uids {
+		records, err := fetchEnvelopeDate(ctx, c, uid, known)
+		if err != nil {
+			return nil, err
+		}
+		for id, record := range records {
+			out[id] = record
+		}
+	}
+	return out, nil
+}
+
+func fetchEnvelopeDate(ctx context.Context, c *connection, uid imaplib.UID, known map[uint32]domain.IndexedDate) (map[uint32]domain.IndexedDate, error) {
+	uids := []imaplib.UID{uid}
 	buffers, err := step(ctx, "uid_fetch_date_envelopes", func() ([]*imapclient.FetchMessageBuffer, error) {
 		return c.client.Fetch(imaplib.UIDSetNum(uids...), &imaplib.FetchOptions{UID: true, InternalDate: true, Envelope: true}).Collect()
 	}, "requested_count", len(uids))

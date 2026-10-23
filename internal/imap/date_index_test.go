@@ -310,3 +310,29 @@ func TestUnavailableRechecksStayBoundedAndTerminate(t *testing.T) {
 		t.Fatal("recheck fetched historical Date headers")
 	}
 }
+
+func TestUnavailableRecoveryDoesNotHideReadableBatchMembers(t *testing.T) {
+	f := testutil.NewIMAP(t)
+	f.AbortUnavailableFetch = true
+	a, _ := f.Account(t, "indexed", []string{testutil.Plain, testutil.Plain})
+	f.UnavailableBodies.Store(uint32(1), true)
+	pool := NewPool(f.Cipher, f.Roots)
+	t.Cleanup(pool.Close)
+	p := &Provider{Pool: pool}
+	err := p.with(t.Context(), a, "test", func(ctx context.Context, c *connection) error {
+		if _, err := selectFolder(ctx, c, "INBOX", 0); err != nil {
+			return err
+		}
+		records, err := fetchEnvelopeDates(ctx, c, []imaplib.UID{1, 2}, nil)
+		if err != nil {
+			return err
+		}
+		if len(records) != 2 || !records[1].Unavailable || records[2].Unavailable || records[2].Date.IsZero() {
+			t.Fatalf("unavailable UID hid another message: %v", records)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

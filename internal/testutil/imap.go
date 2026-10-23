@@ -26,21 +26,22 @@ import (
 )
 
 type Fixture struct {
-	Cipher            *secrets.Cipher
-	Roots             *x509.CertPool
-	Host              string
-	Port              int
-	Server            *imapmemserver.Server
-	InvalidRead       atomic.Bool
-	Sessions          atomic.Int32
-	DateReads         atomic.Int32
-	EnvelopeReads     atomic.Int32
-	MaxEnvelopeBatch  atomic.Int32
-	UnavailableBodies sync.Map
-	Delays            sync.Map
-	ListEntries       []imaplib.ListData
-	IgnoreSentDates   bool
-	stop              chan struct{}
+	Cipher                *secrets.Cipher
+	Roots                 *x509.CertPool
+	Host                  string
+	Port                  int
+	Server                *imapmemserver.Server
+	InvalidRead           atomic.Bool
+	Sessions              atomic.Int32
+	DateReads             atomic.Int32
+	EnvelopeReads         atomic.Int32
+	MaxEnvelopeBatch      atomic.Int32
+	UnavailableBodies     sync.Map
+	AbortUnavailableFetch bool
+	Delays                sync.Map
+	ListEntries           []imaplib.ListData
+	IgnoreSentDates       bool
+	stop                  chan struct{}
 }
 type auditingSession struct {
 	imapserver.Session
@@ -101,7 +102,7 @@ func (s *auditingSession) Fetch(w *imapserver.FetchWriter, n imaplib.NumSet, o *
 					good = append(good, uid)
 				}
 			}
-			if len(good) == 0 {
+			if len(good) == 0 || (s.fixture.AbortUnavailableFetch && len(good) != len(nums)) {
 				return &imaplib.Error{Type: imaplib.StatusResponseTypeNo, Code: imaplib.ResponseCodeUnavailable, Text: "message body unavailable"}
 			}
 			n = imaplib.UIDSetNum(good...)
