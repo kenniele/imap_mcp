@@ -200,3 +200,55 @@ func TestSearchBoundedMetadataPagination(t *testing.T) {
 		t.Fatalf("got %d UIDs across %d pages", len(seen), pages)
 	}
 }
+
+// Yandex accepts SENT date keys but ignores them. A date search must still
+// finish across old mail and preserve matches whose Dates are out of UID order.
+func TestYandexDateSearchIgnoresServerSentFilters(t *testing.T) {
+	f := testutil.NewIMAP(t)
+	f.IgnoreSentDates = true
+	old := strings.Replace(testutil.Plain, "30 Sep 2026", "01 Sep 2026", 1)
+	raws := []string{testutil.Plain}
+	for range 2 {
+		for range MaxScan {
+			raws = append(raws, old)
+		}
+		raws = append(raws, testutil.Plain)
+	}
+	for range 7 {
+		raws = append(raws, testutil.Plain)
+	}
+	a, user := f.Account(t, "yandex", raws)
+	a.Provider = "yandex"
+	pool := NewPool(f.Cipher, f.Roots)
+	t.Cleanup(pool.Close)
+	p := &Provider{Pool: pool}
+	q := domain.SearchQuery{Folder: "INBOX", Limit: 5, Preview: true, After: "2026-09-30T00:00:00Z", Before: "2026-10-01T00:00:00Z"}
+	seen := map[uint32]bool{}
+	pos := domain.Position{}
+	for pages := 0; !pos.Done; pages++ {
+		if pages >= 8 {
+			t.Fatal("date pagination is scanning old BODYSTRUCTURE batches instead of dates")
+		}
+		page, err := p.Search(t.Context(), a, q, pos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range page.Messages {
+			if seen[m.UID] || !matches(m, q) || m.Preview == "" {
+				t.Fatalf("invalid or duplicate match: UID %d", m.UID)
+			}
+			seen[m.UID] = true
+		}
+		if !page.Next.Done && page.Next.BeforeUID == pos.BeforeUID {
+			t.Fatal("cursor made no progress")
+		}
+		pos = page.Next
+	}
+	if len(seen) != 10 || !seen[1] || !seen[MaxScan+2] {
+		t.Fatalf("lost out-of-order Date matches: %v", seen)
+	}
+	status, err := user.Status("INBOX", &imaplib.StatusOptions{NumUnseen: true})
+	if err != nil || int(*status.NumUnseen) != len(raws) {
+		t.Fatal("date search changed Seen flags")
+	}
+}

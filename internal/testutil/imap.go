@@ -26,16 +26,17 @@ import (
 )
 
 type Fixture struct {
-	Cipher      *secrets.Cipher
-	Roots       *x509.CertPool
-	Host        string
-	Port        int
-	Server      *imapmemserver.Server
-	InvalidRead atomic.Bool
-	Sessions    atomic.Int32
-	Delays      sync.Map
-	ListEntries []imaplib.ListData
-	stop        chan struct{}
+	Cipher          *secrets.Cipher
+	Roots           *x509.CertPool
+	Host            string
+	Port            int
+	Server          *imapmemserver.Server
+	InvalidRead     atomic.Bool
+	Sessions        atomic.Int32
+	Delays          sync.Map
+	ListEntries     []imaplib.ListData
+	IgnoreSentDates bool
+	stop            chan struct{}
 }
 type auditingSession struct {
 	imapserver.Session
@@ -60,6 +61,12 @@ func (s *auditingSession) Select(folder string, o *imaplib.SelectOptions) (*imap
 func (s *auditingSession) Search(kind imapserver.NumKind, c *imaplib.SearchCriteria, o *imaplib.SearchOptions) (*imaplib.SearchData, error) {
 	if kind != imapserver.NumKindUID {
 		s.fixture.InvalidRead.Store(true)
+	}
+	if s.fixture.IgnoreSentDates {
+		copy := *c
+		copy.SentSince = time.Time{}
+		copy.SentBefore = time.Time{}
+		c = &copy
 	}
 	return s.Session.Search(kind, c, o)
 }

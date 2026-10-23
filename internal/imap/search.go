@@ -1,13 +1,16 @@
 package imap
 
 import (
+	"bytes"
 	"context"
+	"net/mail"
 	"sort"
 	"time"
 
 	"mail-mcp/internal/domain"
 
 	imaplib "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 const MaxScan = 200
@@ -58,6 +61,13 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 			return nil
 		}
 		criteria := SearchCriteria(q)
+		localDates := a.Provider == "yandex" && (q.After != "" || q.Before != "")
+		if localDates {
+			// Yandex silently ignores SENT date search keys. Filter Date headers
+			// locally without replacing message Date with INTERNALDATE.
+			criteria.SentSince = time.Time{}
+			criteria.SentBefore = time.Time{}
+		}
 		criteria.UID = []imaplib.UIDSet{{{Start: 1, Stop: imaplib.UID(pos.BeforeUID - 1)}}}
 		data, e := step(ctx, "uid_search", func() (*imaplib.SearchData, error) { return c.client.UIDSearch(criteria, nil).Wait() }, "text_filter", q.Query != "", "limit", q.Limit, "preview", q.Preview)
 		if e != nil {
@@ -76,7 +86,26 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 		}
 		count := min(MaxScan, batchSize, q.Limit+1, len(uids))
 		candidates := uids[:count]
-		buffers, e := fetchMetadata(ctx, c, candidates)
+		metadataUIDs := candidates
+		if localDates {
+			candidates = uids[:min(MaxScan, len(uids))]
+			dates, err := fetchDates(ctx, c, candidates)
+			if err != nil {
+				return err
+			}
+			metadataUIDs = nil
+			for i, uid := range candidates {
+				date, ok := dates[uint32(uid)]
+				if ok && matchesDate(date, q) {
+					metadataUIDs = append(metadataUIDs, uid)
+					if len(metadataUIDs) == count {
+						candidates = candidates[:i+1]
+						break
+					}
+				}
+			}
+		}
+		buffers, e := fetchMetadata(ctx, c, metadataUIDs)
 		if e != nil {
 			return e
 		}
@@ -112,18 +141,49 @@ func (p *Provider) Search(ctx context.Context, a domain.Account, q domain.Search
 	})
 	return out, err
 }
-func matches(m domain.Message, q domain.SearchQuery) bool {
+
+// fetchDates scans only bounded Date headers, avoiding expensive ENVELOPE and
+// BODYSTRUCTURE for thousands of messages excluded by the exact time window.
+func fetchDates(ctx context.Context, c *connection, uids []imaplib.UID) (map[uint32]time.Time, error) {
+	section := &imaplib.FetchItemBodySection{Specifier: imaplib.PartSpecifierHeader, HeaderFields: []string{"Date"}, Peek: true, Partial: &imaplib.SectionPartial{Size: 16 * 1024}}
+	buffers, err := step(ctx, "uid_fetch_dates", func() ([]*imapclient.FetchMessageBuffer, error) {
+		return c.client.Fetch(imaplib.UIDSetNum(uids...), &imaplib.FetchOptions{UID: true, InternalDate: true, BodySection: []*imaplib.FetchItemBodySection{section}}).Collect()
+	}, "requested_count", len(uids), "peek", true)
+	if err != nil {
+		return nil, err
+	}
+	dates := make(map[uint32]time.Time, len(buffers))
+	for _, buf := range buffers {
+		date := buf.InternalDate
+		if msg, err := mail.ReadMessage(bytes.NewReader(buf.FindBodySection(section))); err == nil {
+			if parsed, err := msg.Header.Date(); err == nil {
+				date = parsed
+			}
+		}
+		dates[uint32(buf.UID)] = date
+	}
+	return dates, nil
+}
+
+func matchesDate(date time.Time, q domain.SearchQuery) bool {
 	if q.After != "" {
 		t, _ := time.Parse(time.RFC3339, q.After)
-		if m.Date.Before(t) {
+		if date.Before(t) {
 			return false
 		}
 	}
 	if q.Before != "" {
 		t, _ := time.Parse(time.RFC3339, q.Before)
-		if !m.Date.Before(t) {
+		if !date.Before(t) {
 			return false
 		}
+	}
+	return true
+}
+
+func matches(m domain.Message, q domain.SearchQuery) bool {
+	if !matchesDate(m.Date, q) {
+		return false
 	}
 	if q.HasAttachments != nil && m.HasAttachments != *q.HasAttachments {
 		return false
